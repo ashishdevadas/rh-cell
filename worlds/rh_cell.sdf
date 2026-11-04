@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <world name="rh_cell">
+    <!-- Ground and light -->
+    <include><uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Ground Plane</uri></include>
+    <include><uri>https://fuel.gazebosim.org/1.0/OpenRobotics/models/Sun</uri></include>
+
+    <!-- Wall at x = 0.60 m, 20 mm thick, with a 90 x 90 mm port centred at (y=-0.25, z=0.35).
+         Built from 4 boxes around the hole, same numbers as buildCell() in insertion_sequence.cpp -->
+    <model name="wall_left"><static>true</static><pose>0.60 -0.4225 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.02 0.255 0.50</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.02 0.255 0.50</size></box></geometry>
+          <material><diffuse>0.6 0.6 0.65 1</diffuse></material></visual>
+      </link></model>
+
+    <model name="wall_right"><static>true</static><pose>0.60 -0.0775 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.02 0.255 0.50</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.02 0.255 0.50</size></box></geometry>
+          <material><diffuse>0.6 0.6 0.65 1</diffuse></material></visual>
+      </link></model>
+
+    <model name="wall_bottom"><static>true</static><pose>0.60 -0.25 0.2025 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.02 0.09 0.205</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.02 0.09 0.205</size></box></geometry>
+          <material><diffuse>0.6 0.6 0.65 1</diffuse></material></visual>
+      </link></model>
+
+    <model name="wall_top"><static>true</static><pose>0.60 -0.25 0.4975 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.02 0.09 0.205</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.02 0.09 0.205</size></box></geometry>
+          <material><diffuse>0.6 0.6 0.65 1</diffuse></material></visual>
+      </link></model>
+
+    <!-- Pedestal under the cassette's start position -->
+    <model name="pedestal"><static>true</static><pose>0.45 0.25 0.155 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.10 0.10 0.31</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.10 0.10 0.31</size></box></geometry>
+          <material><diffuse>0.8 0.5 0.2 1</diffuse></material></visual>
+      </link></model>
+  </world>
+</sdf>
