@@ -6,6 +6,7 @@
 
 #include "rh_cell_core/admittance_1d.hpp"
 #include "rh_cell_core/force_guard.hpp"
+#include "rh_cell_core/signal.hpp"
 
 using rh_cell_core::Admittance1D;
 using rh_cell_core::ForceGuard;
@@ -64,4 +65,29 @@ TEST(ForceGuard, StaysTrippedUntilReset)
   EXPECT_TRUE(g.tripped()) << "An interlock must latch.";
   g.reset();
   EXPECT_FALSE(g.tripped());
+}
+
+// ---------------------------------------------------------------- signal helpers
+TEST(Signal, LowPassReachesStep)
+{
+  rh_cell_core::LowPass lp(20.0);
+  lp.update(0.0, 0.002);
+  for (int i = 0; i < 500; ++i) lp.update(1.0, 0.002);
+  EXPECT_NEAR(lp.value(), 1.0, 1e-3);
+}
+
+TEST(Signal, LowPassSmoothsSpike)
+{
+  rh_cell_core::LowPass lp(5.0);
+  lp.update(0.0, 0.002);
+  EXPECT_LT(lp.update(100.0, 0.002), 10.0) << "A one-sample spike must be attenuated.";
+}
+
+TEST(Signal, WatchdogTimesOut)
+{
+  rh_cell_core::Watchdog w(0.05);
+  EXPECT_FALSE(w.alive(0.0)) << "Never fed = not alive.";
+  w.feed(1.00);
+  EXPECT_TRUE(w.alive(1.04));
+  EXPECT_FALSE(w.alive(1.06));
 }
