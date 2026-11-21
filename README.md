@@ -4,11 +4,15 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 
 **Stack:** ROS 2 Jazzy · MoveIt 2 · Gazebo Harmonic · C++17
 
+![Phase 1.1 cycle](docs/phase1_1_cycle.gif)
+
+*Phase 1.1: remove the cassette from the pedestal, insert it through the 90 mm port, extract, put it back (MoveIt 2, 16 steps, played at 1.5x). The two approach points use taught joint configurations: a pose goal lets MoveIt pick any of the UR's inverse-kinematics solutions, and some of them cannot make the following straight-line move. Straight moves wait for the arm to settle and are re-planned if move_group rejects the start state.*
+
 ## Roadmap
 
 | Phase | Content | Status |
 |---|---|---|
-| 1.1 | Cell layout + scripted remove / insert / extract sequence | ✅ this commit |
+| 1.1 | Cell layout + scripted remove / insert / extract sequence | ✅ |
 | 1.2 | Force/torque sensing + impedance-controlled insertion with a force limit | ⏳ |
 | 1.3 | Gamepad teleoperation with virtual fixtures | ⏳ |
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ⏳ |

@@ -53,6 +53,15 @@ constexpr double kLift = 0.05;
 constexpr double kPreInsertX = 0.50 - kToolToCasCentre;                              // cassette front 30 mm before wall
 constexpr double kInsertX = (kPortX - kWallThick / 2.0 + kCasLen / 2.0) - kToolToCasCentre;  // rear face flush with wall
 
+// Taught joint configurations [rad] for the two approach points (like teach-pendant positions).
+// A pose goal lets MoveIt pick any of the UR's IK solutions (up to 8 arm configurations, plus
+// +-2*pi wrist turns), and some of them cannot do the following straight-line move: the arm
+// collides or would need a joint flip ("Straight-line path only 27.5% feasible"). Fixing the
+// configuration makes every cycle the same. Values = an elbow-up solution found by the planner.
+const std::vector<double> kReadyQ = {0.0, -1.57, 1.57, -1.57, -1.57, 0.0};
+const std::vector<double> kPreGraspQ = {0.4592, -1.3876, 2.3864, -4.1360, -2.0210, 1.5691};
+const std::vector<double> kPreInsertQ = {-0.9654, -1.1935, 2.1005, -4.0620, -0.6020, 1.5788};
+
 // Tool z-axis along world +x: rotation of +90 deg about y.
 geometry_msgs::msg::Pose toolPose(double x, double y, double z)
 {
@@ -202,8 +211,8 @@ public:
   bool run()
   {
     const std::vector<std::pair<std::string, std::function<bool()>>> steps = {
-      {"Move to ready", [&] { return moveJoints({0.0, -1.57, 1.57, -1.57, -1.57, 0.0}); }},
-      {"Pre-grasp", [&] { return movePlanned(toolPose(kPreGraspX, kPedY, kCasZ)); }},
+      {"Move to ready", [&] { return moveJoints(kReadyQ); }},
+      {"Pre-grasp", [&] { return moveJoints(kPreGraspQ); }},
       {"Approach cassette", [&] { return moveLinear(toolPose(kGraspX, kPedY, kCasZ), 0.1); }},
       {"Grip (attach)", [&] { return attach(); }},
       {"Lift off pedestal", [&] { return moveLinear(toolPose(kGraspX, kPedY, kCasZ + kLift), 0.1); }},
@@ -214,7 +223,7 @@ public:
          q_above_pedestal_ = mg_.getCurrentJointValues();  // remembered for the return trip
          return !q_above_pedestal_.empty();
        }},
-      {"Pre-insert at port", [&] { return movePlanned(toolPose(kPreInsertX, kPortY, kPortZ)); }},
+      {"Pre-insert at port", [&] { return moveJoints(kPreInsertQ); }},
       {"INSERT through port", [&] { return moveLinear(toolPose(kInsertX, kPortY, kPortZ), 0.05); }},
       {"Hold inserted", [&] { std::this_thread::sleep_for(2s); return true; }},
       {"EXTRACT from port", [&] { return moveLinear(toolPose(kPreInsertX, kPortY, kPortZ), 0.05); }},
@@ -224,7 +233,7 @@ public:
       {"Lower onto pedestal", [&] { return moveLinear(toolPose(kGraspX, kPedY, kCasZ), 0.05); }},
       {"Release (detach)", [&] { return detach(); }},
       {"Retreat", [&] { return moveLinear(toolPose(kPreGraspX, kPedY, kCasZ), 0.2); }},
-      {"Back to ready", [&] { return moveJoints({0.0, -1.57, 1.57, -1.57, -1.57, 0.0}); }},
+      {"Back to ready", [&] { return moveJoints(kReadyQ); }},
     };
 
     const auto t0 = node_->now();
@@ -275,21 +284,33 @@ private:
 
   // Straight-line tool motion, collision-checked. move_group times the path using the robot's
   // joint limits and the scaling factors we send (`speed` = fraction of max velocity/acceleration).
+  // If move_group rejects the execution (typically "start point deviates from current robot state":
+  // the arm has not fully settled after the previous move), wait, recompute the path from the
+  // current state and try again.
   bool moveLinear(const geometry_msgs::msg::Pose& target, double speed)
   {
-    mg_.setMaxVelocityScalingFactor(speed);
-    mg_.setMaxAccelerationScalingFactor(speed);
-    std::vector<geometry_msgs::msg::Pose> waypoints{target};
-    moveit_msgs::msg::RobotTrajectory traj_msg;
-    const double fraction = mg_.computeCartesianPath(waypoints, 0.005, traj_msg);
-    mg_.setMaxVelocityScalingFactor(kDefaultSpeed);
-    mg_.setMaxAccelerationScalingFactor(kDefaultSpeed);
-    if (fraction < 0.999)
+    constexpr int kMaxTries = 3;
+    for (int attempt = 1; attempt <= kMaxTries; ++attempt)
     {
-      RCLCPP_ERROR(log_, "Straight-line path only %.1f%% feasible.", fraction * 100.0);
-      return false;
+      std::this_thread::sleep_for(300ms);  // settle: the path must start where the robot really is
+      mg_.setMaxVelocityScalingFactor(speed);
+      mg_.setMaxAccelerationScalingFactor(speed);
+      std::vector<geometry_msgs::msg::Pose> waypoints{target};
+      moveit_msgs::msg::RobotTrajectory traj_msg;
+      const double fraction = mg_.computeCartesianPath(waypoints, 0.005, traj_msg);
+      mg_.setMaxVelocityScalingFactor(kDefaultSpeed);
+      mg_.setMaxAccelerationScalingFactor(kDefaultSpeed);
+      if (fraction < 0.999)
+      {
+        RCLCPP_ERROR(log_, "Straight-line path only %.1f%% feasible.", fraction * 100.0);
+        return false;
+      }
+      if (static_cast<bool>(mg_.execute(traj_msg)))
+        return true;
+      RCLCPP_WARN(log_, "Straight-line execution rejected (attempt %d/%d, reason in terminal 1). Retrying.", attempt,
+                  kMaxTries);
     }
-    return static_cast<bool>(mg_.execute(traj_msg));
+    return false;
   }
 
   bool attach()
