@@ -52,6 +52,38 @@
           <material><diffuse>0.6 0.6 0.65 1</diffuse></material></visual>
       </link></model>
 
+    <!-- Seat (backstop) behind the port. Front face at x = 0.71 m: where the cassette front face is
+         when its rear face is flush with the wall. The force controller seats the cassette against it.
+         The plate is spring-loaded (prismatic joint, 5 kN/m, 15 mm travel), like a compliant docking
+         stop: a perfectly rigid stop gives force spikes of hundreds of newtons at first touch, faster
+         than a 250 Hz force loop can react. -->
+    <model name="seat">
+      <pose>0 0 0 0 0 0</pose>
+      <link name="base">
+        <pose>0.75 -0.25 0.35 0 0 0</pose>
+        <inertial><mass>5.0</mass><inertia><ixx>0.02</ixx><iyy>0.02</iyy><izz>0.02</izz></inertia></inertial>
+        <collision name="c"><geometry><box><size>0.02 0.15 0.15</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.02 0.15 0.15</size></box></geometry>
+          <material><ambient>0.3 0.3 0.3 1</ambient><diffuse>0.3 0.3 0.3 1</diffuse></material></visual>
+      </link>
+      <link name="plate">
+        <pose>0.72 -0.25 0.35 0 0 0</pose>
+        <inertial><mass>0.2</mass><inertia><ixx>0.0004</ixx><iyy>0.0004</iyy><izz>0.0004</izz></inertia></inertial>
+        <collision name="c"><geometry><box><size>0.02 0.15 0.15</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.02 0.15 0.15</size></box></geometry>
+          <material><ambient>0.2 0.5 0.3 1</ambient><diffuse>0.2 0.5 0.3 1</diffuse></material></visual>
+      </link>
+      <joint name="anchor" type="fixed"><parent>world</parent><child>base</child></joint>
+      <joint name="spring" type="prismatic">
+        <parent>base</parent><child>plate</child>
+        <axis>
+          <xyz>1 0 0</xyz>
+          <limit><lower>0</lower><upper>0.015</upper></limit>
+          <dynamics><spring_reference>0</spring_reference><spring_stiffness>5000</spring_stiffness><damping>50</damping></dynamics>
+        </axis>
+      </joint>
+    </model>
+
     <!-- Pedestal under the cassette's start position -->
     <model name="pedestal"><static>true</static><pose>0.45 0.25 0.155 0 0 0</pose>
       <link name="link">
