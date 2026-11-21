@@ -18,6 +18,28 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ⏳ |
 | 3 | Fault injection, FMEA, demo video | ⏳ |
 
+## Phase 1.2 progress: force/torque sensor check
+
+![F/T sensor in Gazebo](docs/phase1_2_ft_sensor.png)
+
+A 6-axis force/torque sensor sits on a fixed joint between `tool0` and a 0.5 kg cassette (`urdf/rh_cell_ur.urdf.xacro`). The joint is kept with `preserveFixedJoint`, otherwise Gazebo merges it and the sensor has nothing to measure. Before any force control, the sensor must read the cassette's weight at rest:
+
+| | Measured | Expected |
+|---|---|---|
+| Force | F_y = 4.900 N | m·g = 0.5 kg × 9.8 m/s² = 4.900 N (Gazebo's default gravity) |
+| Torque | τ_x = −0.3185 N·m | τ = r × F with r = 65 mm to the cassette's centre of mass: −0.065 × 4.9 = −0.3185 N·m |
+
+The force appears on the tool's y axis because in the start pose that axis points down; the sensor reports in its own frame.
+
+Damping choice for the admittance controller (offline test in `rh_cell_core`): D = 60 N·s/m gives 1.2 mm tracking lag, D = 200 N·s/m gives 4 mm ([plot](docs/contact_force_D200.png)).
+
+```bash
+ros2 launch ur_simulation_gz ur_sim_control.launch.py ur_type:=ur5e launch_rviz:=false \
+  description_file:=$HOME/rh_cell_ws/src/rh-cell/urdf/rh_cell_ur.urdf.xacro \
+  world_file:=$HOME/rh_cell_ws/src/rh-cell/worlds/rh_cell.sdf
+gz topic -e -t /rh/ft -n 1
+```
+
 ## Cell layout (metres, robot base frame)
 
 | Object | Size | Centre |
