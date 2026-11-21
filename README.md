@@ -34,10 +34,8 @@ The force appears on the tool's y axis because in the start pose that axis point
 Damping choice for the admittance controller (offline test in `rh_cell_core`): D = 60 N·s/m gives 1.2 mm tracking lag, D = 200 N·s/m gives 4 mm ([plot](docs/contact_force_D200.png)).
 
 ```bash
-ros2 launch ur_simulation_gz ur_sim_control.launch.py ur_type:=ur5e launch_rviz:=false \
-  description_file:=$HOME/rh_cell_ws/src/rh-cell/urdf/rh_cell_ur.urdf.xacro \
-  world_file:=$HOME/rh_cell_ws/src/rh-cell/worlds/rh_cell.sdf
-gz topic -e -t /rh/ft -n 1
+ros2 launch rh_cell_bringup sim.launch.py
+ros2 topic echo /rh/ft --once      # 4.90 N on tool y; about 375 Hz on a laptop (ros2 topic hz /rh/ft)
 ```
 
 ## Cell layout (metres, robot base frame)
@@ -54,7 +52,7 @@ Insertion is along +x with the tool z-axis aligned to +x. At full insertion, the
 
 ```bash
 mkdir -p ~/rh_cell_ws/src && cd ~/rh_cell_ws/src
-git clone https://github.com/<your-username>/rh-cell.git
+git clone https://github.com/ashishdevadas/rh-cell.git
 cd ~/rh_cell_ws
 rosdep install --from-paths src --ignore-src -y
 colcon build --symlink-install
@@ -62,6 +60,15 @@ source install/setup.bash
 ```
 
 ## Run
+
+### Phase 1.2 cell: robot with F/T sensor and cassette, cell world, MoveIt, RViz
+
+```bash
+ros2 launch rh_cell_bringup sim.launch.py
+```
+One command starts Gazebo with `rh_cell_description` (robot + world), the F/T bridge (`/rh/ft`), MoveIt 2, RViz with `rh_cell_bringup/config/rh_cell.rviz`, and loads `forward_position_controller` inactive for force control. Do not run `insertion_sequence` with this launch: here the cassette is fixed to the tool in Gazebo, so it would hit the pedestal.
+
+### Phase 1.1 scripted sequence (stock UR simulation, cell as MoveIt collision objects)
 
 Terminal 1 — simulation + MoveIt + RViz:
 ```bash
@@ -83,5 +90,6 @@ The cell appears in RViz as green collision objects. The cassette turns purple w
 | `move_group not found` | Start terminal 1 first and wait for RViz to load |
 | `Didn't receive robot state with recent timestamp` | Add `-p use_sim_time:=true` |
 | Gazebo crashes or shows a black window in WSL | `export LIBGL_ALWAYS_SOFTWARE=1` before launching |
-| `Straight-line path only xx% feasible` on approach | Increase the gap: lower `kToolToCasCentre` slightly or move `kGraspX` back |
-| Planning fails at pre-insert | Raise `setPlanningTime` to 10 s, or move the port closer to the robot |
+| `Straight-line path only xx% feasible` | The chosen arm configuration cannot make the straight move; this is why the approach points use taught joint values (`kPreGraspQ`, `kPreInsertQ`) |
+| Forces of thousands of newtons, frame `ur_0/...` | A second robot was spawned into a leftover Gazebo: `pkill -f "gz sim"`, check with `ps aux \| grep "gz sim"`, relaunch |
+| `Execute request aborted` right after a straight move | The arm had not settled (start-state tolerance 0.01 rad); straight moves wait 0.3 s and retry |

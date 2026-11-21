@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>rh_cell_description</name>
+  <version>0.2.0</version>
+  <description>Remote-handling cell: UR5e with a force/torque sensor and cassette, and the Gazebo world (wall with port, pedestal).</description>
+  <maintainer email="ashishdevadas00@gmail.com">Ashish</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>ur_description</exec_depend>
+  <exec_depend>ur_simulation_gz</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

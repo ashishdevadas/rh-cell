@@ -1,0 +1,6 @@
+# Gazebo -> ROS: the F/T sensor. (/clock is bridged by ur_sim_control.launch.py.)
+- ros_topic_name: /rh/ft
+  gz_topic_name: /rh/ft
+  ros_type_name: geometry_msgs/msg/WrenchStamped
+  gz_type_name: gz.msgs.Wrench
+  direction: GZ_TO_ROS
