@@ -4,6 +4,7 @@ F/T bridge to ROS, MoveIt 2 and RViz.
     ros2 launch rh_cell_bringup sim.launch.py
     ros2 launch rh_cell_bringup sim.launch.py gazebo_gui:=false launch_rviz:=false   # headless
     ros2 launch rh_cell_bringup sim.launch.py ic:=true     # + Phase 2 I&C layer (EPICS IOC + PLC bridge)
+    ros2 launch rh_cell_bringup sim.launch.py world:=rh_cell_tight.sdf   # 2 mm clearance + chamfer (RH Cell 2.0)
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
@@ -28,7 +29,7 @@ def generate_launch_description():
         launch_arguments={
             "ur_type": ur_type,
             "description_file": PathJoinSubstitution([desc, "urdf", "rh_cell_ur.urdf.xacro"]),
-            "world_file": PathJoinSubstitution([desc, "worlds", "rh_cell.sdf"]),
+            "world_file": PathJoinSubstitution([desc, "worlds", LaunchConfiguration("world")]),
             "gazebo_gui": LaunchConfiguration("gazebo_gui"),
             "launch_rviz": "false",
         }.items(),
@@ -93,6 +94,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
+        DeclareLaunchArgument("world", default_value="rh_cell.sdf",
+                              description="World file in rh_cell_description/worlds (rh_cell.sdf or rh_cell_tight.sdf)"),
         DeclareLaunchArgument("gazebo_gui", default_value="true"),
         DeclareLaunchArgument("launch_rviz", default_value="true"),
         DeclareLaunchArgument("ic", default_value="false", description="Start the Phase 2 I&C layer"),
