@@ -1,12 +1,36 @@
 # rh-cell — Remote-Handling Cell
 
-A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e removes a cassette from a pedestal, inserts it through a tight port in a wall (10 mm clearance per side), extracts it, and puts it back.
+A simulated remote-handling cell, at desk scale, built around control problems that ITER's remote-handling systems face. A UR5e with a 6-axis force/torque sensor inserts a cassette through a tight port (90 mm opening, 70 mm cassette) and seats it against a spring-loaded backstop, under force control or teleoperation, supervised by a latched interlock with an EPICS operator interface. Faults are injected on purpose and analysed in an FMEA.
 
-**Stack:** ROS 2 Jazzy · MoveIt 2 · Gazebo Harmonic · C++17
+**Stack:** ROS 2 Jazzy · MoveIt 2 · Gazebo Harmonic · ros2_control · C++17 · Python · EPICS Channel Access (caproto) · IEC 61131-3 Structured Text (OpenPLC) · CS-Studio Phoebus
 
-![Phase 1.1 cycle](docs/phase1_1_cycle.gif)
+![Force-controlled insertion](docs/phase1_2_insertion.gif)
 
-*Phase 1.1: remove the cassette from the pedestal, insert it through the 90 mm port, extract, put it back (MoveIt 2, 16 steps, played at 1.5x). The two approach points use taught joint configurations: a pose goal lets MoveIt pick any of the UR's inverse-kinematics solutions, and some of them cannot make the following straight-line move. Straight moves wait for the arm to settle and are re-planned if move_group rejects the start state.*
+**Results in one line each** (simulation, laptop, WSL2):
+- Force-controlled insertion seats at 151 mm with 4.5 N, the value predicted by the springs in series.
+- Three injected faults (misaligned port, admittance off, sensor lost) are all caught; the misaligned port shows why software cannot bound a rigid impact (263–465 N).
+- Teleoperation with a virtual fixture reaches the seat at the 8 N push limit; the same commands without it jam at 703 N.
+- An e-stop mid-insertion freezes the robot; it backs out only after release and reset.
+
+## Motivation: ITER remote-handling problems at desk scale
+
+This project does not solve ITER's problems. It rebuilds some of their control and supervision questions at desk scale, with a 5 kg-payload arm instead of multi-tonne machines.
+
+| ITER remote-handling problem | rh-cell | Honest gap |
+|---|---|---|
+| Heavy parts through narrow ports: 54 divertor cassettes of about 10 t positioned to under 5 mm [3]; blanket modules up to 4.5 t with 0.5 mm clearance to the keys [4] | 70 mm cassette through a 90 mm port; collision-aware planning (Phase 1.1) | Toy scale: 0.5 kg, 10 mm clearance |
+| Long arms bend under load, so the real position differs from the believed one; ITER corrects with vision [1] | `fault:=misaligned`: the port is 15 mm away from where the robot believes (Phase 3) | Models the effect of deflection, not the deflection itself |
+| Contact sensing with force/torque sensors [1] | 6-axis F/T sensor, admittance control, force guard (Phase 1.2) | — |
+| Rough positioning by camera, then force/torque-controlled fine positioning [4] | MoveIt brings the cassette close, force control seats it (Phase 1.2) | Same idea, simpler mechanics |
+| Loads released gradually before letting go [1] | Not implemented | Open action |
+| Operator in the loop: haptic master arm, virtual reality flags collisions [3] | Teleoperation with a guidance virtual fixture and push limit (Phase 1.3) | Keyboard / scripted operator, no force feedback |
+| Emergency stops put devices in a safe state; extra safety when operators work beside machines [3] | Latched interlock, first-out, EPICS operator interface (Phase 2) | Functional demo, not safety-rated |
+| Radiation: about 500 Gy/h during blanket maintenance [4], components qualified to 1 MGy [3], radiation-hard cameras still in development [2] | Only sensor loss is injected | Not addressed |
+
+[1] ITER Newsline, "ITER and industry push robotics into new territory", 2026. https://www.iter.org/node/20687/iter-and-industry-push-robotics-new-territory
+[2] Fusion for Energy, "ITER remote handling experts discuss mix of technologies to cope with radiation". https://fusionforenergy.europa.eu/news/iter-remote-handling-experts-discuss-mix-of-technologies-to-cope-with-radiation/
+[3] Fusion for Energy, "Brief overview of the divertor remote handling system". https://industryportal.f4e.europa.eu/media/w50bgrbn/brief_overview_of_the_divertor_remote_handling_system_35ywca_v1_3-3.pdf
+[4] Kakudate et al., "Progress in development of the blanket remote handling system for ITER", IAEA FEC 2010. https://www-pub.iaea.org/MTCD/meetings/PDFplus/2010/cn180/cn180_papers/itr_p1-21.pdf
 
 ## Roadmap
 
@@ -18,11 +42,27 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ✅ |
 | 3 | Fault injection + FMEA ([docs/FMEA.md](docs/FMEA.md)) | ✅ |
 
-## Phase 1.2 progress: force/torque sensor check
+## Repository layout
+
+| Package | Language | Content |
+|---|---|---|
+| `rh_cell_core` | C++17, no ROS | Admittance controller, force guard, insertion monitor, virtual fixture, low-pass filter, watchdog (GoogleTest) |
+| `rh_cell_description` | xacro, SDF | UR5e + F/T sensor + cassette; cell world with wall, port, pedestal and spring-loaded seat |
+| `rh_cell_tasks` | C++17, Python | `insertion_sequence`, `force_insertion` (+ fault injection), `teleop_fixture`, `ft_monitor`, plotting scripts |
+| `rh_cell_ic` | Python, ST | Interlock (soft PLC / OpenPLC over Modbus), EPICS IOC, PLC bridge, `estop_demo`, Phoebus screen (pytest) |
+| `rh_cell_bringup` | launch | `sim.launch.py` (Gazebo, F/T bridge, MoveIt, RViz; `ic:=true` adds the I&C layer), `ic.launch.py` |
+
+## Phase 1.1: scripted cycle (MoveIt)
+
+![Phase 1.1 cycle](docs/phase1_1_cycle.gif)
+
+*Remove the cassette from the pedestal, insert it through the 90 mm port, extract, put it back (MoveIt 2, 16 steps, played at 1.5x). The two approach points use taught joint configurations: a pose goal lets MoveIt pick any of the UR's inverse-kinematics solutions, and some of them cannot make the following straight-line move. Straight moves wait for the arm to settle and are re-planned if move_group rejects the start state.*
+
+## Phase 1.2a: force/torque sensor check
 
 ![F/T sensor in Gazebo](docs/phase1_2_ft_sensor.png)
 
-A 6-axis force/torque sensor sits on a fixed joint between `tool0` and a 0.5 kg cassette (`urdf/rh_cell_ur.urdf.xacro`). The joint is kept with `preserveFixedJoint`, otherwise Gazebo merges it and the sensor has nothing to measure. Before any force control, the sensor must read the cassette's weight at rest:
+A 6-axis force/torque sensor sits on a fixed joint between `tool0` and a 0.5 kg cassette (`rh_cell_description/urdf/rh_cell_ur.urdf.xacro`). The joint is kept with `preserveFixedJoint`, otherwise Gazebo merges it and the sensor has nothing to measure. Before any force control, the sensor must read the cassette's weight at rest:
 
 | | Measured | Expected |
 |---|---|---|
@@ -38,7 +78,7 @@ ros2 launch rh_cell_bringup sim.launch.py
 ros2 topic echo /rh/ft --once      # 4.90 N on tool y; about 375 Hz on a laptop (ros2 topic hz /rh/ft)
 ```
 
-## Phase 1.2: force-controlled insertion
+## Phase 1.2b: force-controlled insertion
 
 ![Force-controlled insertion](docs/phase1_2_insertion.gif)
 
@@ -154,12 +194,18 @@ ros2 run rh_cell_tasks force_insertion --ros-args -p fault:=misaligned   # or st
 | Wall | 0.02 thick, port 0.09 × 0.09 | x = 0.60, port at (y −0.25, z 0.35) |
 | Cassette | 0.12 × 0.07 × 0.07 | starts at (0.45, 0.25, 0.35) |
 | Pedestal | 0.10 × 0.10 × 0.31 | (0.45, 0.25) |
+| Seat (backstop) | spring-loaded plate, 5 kN/m, 15 mm travel | front face at x = 0.71 |
 
 Insertion is along +x with the tool z-axis aligned to +x. At full insertion, the cassette's rear face is flush with the wall's front face.
 
 ## Build
 
+Tested on ROS 2 Jazzy, Ubuntu 24.04 under WSL2.
+
 ```bash
+sudo apt install ros-jazzy-ur-simulation-gz ros-jazzy-ur-moveit-config ros-jazzy-ros-gz-bridge \
+                 ros-jazzy-teleop-twist-keyboard python3-pandas python3-matplotlib python3-pytest
+pip install --break-system-packages caproto pymodbus      # Phase 2 only
 mkdir -p ~/rh_cell_ws/src && cd ~/rh_cell_ws/src
 git clone https://github.com/ashishdevadas/rh-cell.git
 cd ~/rh_cell_ws
@@ -177,6 +223,21 @@ ros2 launch rh_cell_bringup sim.launch.py
 ```
 One command starts Gazebo with `rh_cell_description` (robot + world), the F/T bridge (`/rh/ft`), MoveIt 2, RViz with `rh_cell_bringup/config/rh_cell.rviz`, and loads `forward_position_controller` inactive for force control. Do not run `insertion_sequence` with this launch: here the cassette is fixed to the tool in Gazebo, so it would hit the pedestal.
 
+Quick reference (terminal 2, after `source ~/rh_cell_ws/install/setup.bash`):
+```bash
+ros2 run rh_cell_tasks ft_monitor                                         # sensor check (tare, watchdog)
+ros2 run rh_cell_tasks force_insertion                                    # Phase 1.2
+ros2 run rh_cell_tasks force_insertion --ros-args -p fault:=misaligned    # Phase 3: or stiff, sensor_dropout
+ros2 run rh_cell_tasks teleop_fixture                                     # Phase 1.3, then teleop_demo.py
+ros2 run rh_cell_tasks force_insertion --ros-args -p require_permit:=true # Phase 2 (launch with ic:=true), then:
+ros2 run rh_cell_ic estop_demo
+```
+
+Tests:
+```bash
+colcon test --packages-select rh_cell_core rh_cell_ic && colcon test-result --verbose
+```
+
 ### Phase 1.1 scripted sequence (stock UR simulation, cell as MoveIt collision objects)
 
 Terminal 1 — simulation + MoveIt + RViz:
@@ -192,6 +253,15 @@ ros2 run rh_cell_tasks insertion_sequence --ros-args -p use_sim_time:=true
 
 The cell appears in RViz as green collision objects. The cassette turns purple when it is attached to the tool. The robot executes 16 steps and logs each one; the Gazebo window shows only the robot for now.
 
+## Limitations
+
+- Simulation only. The joints are position-controlled and close to infinitely stiff, so contact forces against rigid parts are upper bounds, and they vary between runs.
+- In Phases 1.2–3 the cassette is fixed to the tool in the Gazebo model: no gripper, no grasp or release physics.
+- The F/T sensor in simulation has no noise; a real sensor wobbles by a fraction of a newton.
+- The teleoperation comparison uses a scripted operator with identical commands, not human operators.
+- The interlock is a functional demonstration of the logic, not a safety-rated design. The OpenPLC path is tested against a minimal Modbus server running the same logic, not against the OpenPLC runtime; the Phoebus screen file is provided but not shown here.
+- Open actions are listed at the end of [docs/FMEA.md](docs/FMEA.md).
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -202,3 +272,5 @@ The cell appears in RViz as green collision objects. The cassette turns purple w
 | `Straight-line path only xx% feasible` | The chosen arm configuration cannot make the straight move; this is why the approach points use taught joint values (`kPreGraspQ`, `kPreInsertQ`) |
 | Forces of thousands of newtons, frame `ur_0/...` | A second robot was spawned into a leftover Gazebo: `pkill -f "gz sim"`, check with `ps aux \| grep "gz sim"`, relaunch |
 | `Execute request aborted` right after a straight move | The arm had not settled (start-state tolerance 0.01 rad); straight moves wait 0.3 s and retry |
+| `caproto` get / put time out | `export EPICS_CA_ADDR_LIST=127.0.0.1 EPICS_CA_AUTO_ADDR_LIST=NO`, and launch with `ic:=true` |
+| `force_insertion` waits at `WAIT_PERMIT` | Press RESET: `python3 -m caproto.commandline.put RH:RESET 1` (or run `estop_demo`) |
