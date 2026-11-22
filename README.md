@@ -13,7 +13,7 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 | Phase | Content | Status |
 |---|---|---|
 | 1.1 | Cell layout + scripted remove / insert / extract sequence | ✅ |
-| 1.2 | Force/torque sensing + impedance-controlled insertion with a force limit | ⏳ |
+| 1.2 | Force/torque sensing + admittance-controlled insertion with a force limit | ✅ |
 | 1.3 | Gamepad teleoperation with virtual fixtures | ⏳ |
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ⏳ |
 | 3 | Fault injection, FMEA, demo video | ⏳ |
@@ -36,6 +36,32 @@ Damping choice for the admittance controller (offline test in `rh_cell_core`): D
 ```bash
 ros2 launch rh_cell_bringup sim.launch.py
 ros2 topic echo /rh/ft --once      # 4.90 N on tool y; about 375 Hz on a laptop (ros2 topic hz /rh/ft)
+```
+
+## Phase 1.2: force-controlled insertion
+
+![Force-controlled insertion](docs/phase1_2_insertion.gif)
+
+`force_insertion` brings the cassette to the port with MoveIt (taught joint configuration), tares the F/T sensor, switches to `forward_position_controller` and runs a 250 Hz loop in sim time:
+
+- **Reference** depth along the port axis: fast in free space, slow through the port mouth and near the seat, ending 10 mm **behind** the seat face on purpose.
+- **Admittance** `M·a + D·v + K·(x − x_des) = F` (M = 2 kg, D = 60 N·s/m, K = 500 N/m) turns that 10 mm into a bounded push instead of a collision.
+- **Cartesian streaming**: every 4 ms one damped-least-squares IK step (q̇ = J⁺v) turns the tool target into joint positions.
+- **Safety layer**: force guard (|F| > 20 N for 5 samples), insertion monitor (contact before the expected depth), 50 ms sensor watchdog, joint tracking check. Any of them stops and backs out.
+
+![Insertion plot](docs/phase1_2_insertion.png)
+
+| Result (laptop, WSL2) | Value |
+|---|---|
+| Seated depth | 151.1 mm (seat face at 150 mm) |
+| Steady seating force | 4.5 N = 10 mm × (500 · 5000 / 5500): virtual spring in series with the 5 kN/m seat |
+| Peak force | 5.2 N. The small oscillation at first touch is the spring-loaded seat plate, damped within ~1 s |
+| Cycle (insert, hold 2 s) | 19.8 s sim time |
+
+```bash
+ros2 launch rh_cell_bringup sim.launch.py
+ros2 run rh_cell_tasks force_insertion
+ros2 run rh_cell_tasks plot_run.py
 ```
 
 ## Cell layout (metres, robot base frame)
