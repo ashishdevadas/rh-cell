@@ -16,7 +16,7 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 | 1.2 | Force/torque sensing + admittance-controlled insertion with a force limit | ✅ |
 | 1.3 | Gamepad teleoperation with virtual fixtures | ⏳ |
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ⏳ |
-| 3 | Fault injection, FMEA, demo video | ⏳ |
+| 3 | Fault injection, FMEA, demo video | 🟡 fault injection done |
 
 ## Phase 1.2 progress: force/torque sensor check
 
@@ -63,6 +63,29 @@ ros2 launch rh_cell_bringup sim.launch.py
 ros2 run rh_cell_tasks force_insertion
 ros2 run rh_cell_tasks plot_run.py
 ```
+
+## Phase 3 (part 1): fault injection
+
+Each fault is injected on purpose; the safety layer must catch it and back the cassette out.
+
+```bash
+ros2 run rh_cell_tasks force_insertion --ros-args -p fault:=misaligned   # or stiff, sensor_dropout
+```
+
+| Injected fault | Models | Caught by | Result (laptop, WSL2) |
+|---|---|---|---|
+| none | — | — | SEATED, 151.2 mm, peak 5.7 N |
+| `misaligned` | Robot believes the port is 15 mm further along +y than it is (calibration error / arm deflection) | Force guard, 5 samples > 20 N | Stopped at 30.0 mm (wall face), backed out; **peak 263 N** |
+| `stiff` | Admittance off: pure position control into the seat | Force guard | Tripped at 20.1 N, 155.1 mm deep |
+| `sensor_dropout` | F/T stream cut 4 s into the insertion | 50 ms watchdog | Stopped at 30.9 mm, backed out |
+
+![Fault injection](docs/fault_injection.png)
+
+![Misaligned port, top view](docs/fault_misaligned.gif)
+
+*Top view of `fault:=misaligned`: the cassette stops at the wall face (grey line) instead of passing through to the seat (green), the force guard trips, and the arm backs out. The opening is hidden from above by the wall piece over the port.*
+
+**The misaligned case is the important one.** Detection is consistent (always 30.0 mm, 5 samples), but the impact peak is not: 263 N in this run, 447 N and 465 N in other runs of the same code, and slowing the approach from 5 to 1 mm/s barely changes it. Against a rigid obstacle, the first impact is set by contact and joint stiffness, not by the control loop: software limits how long the overload lasts, not how high it goes. That is why the seat in this cell is spring-loaded, and why real remote-handling systems rely on passive compliance and on checking alignment *before* contact (vision, in ITER's case) rather than on force control alone.
 
 ## Cell layout (metres, robot base frame)
 

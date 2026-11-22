@@ -46,6 +46,6 @@ ament_target_dependencies(force_insertion
   sensor_msgs controller_manager_msgs)
 
 install(TARGETS insertion_sequence ft_monitor force_insertion DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/plot_run.py DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/plot_run.py scripts/plot_faults.py DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

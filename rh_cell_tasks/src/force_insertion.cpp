@@ -1,10 +1,16 @@
-// Remote-handling cell — Phase 1.2: force-controlled insertion
+// Remote-handling cell — Phase 1.2 + Phase 3: force-controlled insertion with fault injection
 // The cassette (fixed to the tool in Gazebo) is pushed through the port until it seats on the
 // spring-loaded backstop, held, and extracted.
 //
 //   ros2 launch rh_cell_bringup sim.launch.py      # terminal 1
-//   ros2 run rh_cell_tasks force_insertion         # terminal 2
+//   ros2 run rh_cell_tasks force_insertion         # terminal 2 (nominal)
 //   ros2 run rh_cell_tasks plot_run.py             # plot the latest log
+//
+// Fault injection (Phase 3): -p fault:=...
+//   misaligned      the robot believes the port is 15 mm further along +y than it is (calibration
+//                   error / arm deflection): the cassette hits the wall face instead of the opening
+//   stiff           admittance switched off: pure position control into the seat
+//   sensor_dropout  the F/T stream stops 4 s into the insertion
 //
 // Sequence
 //   1. MoveIt: ready -> pre-insert (taught joint configuration, like Phase 1.1)
@@ -54,6 +60,9 @@ namespace
 {
 struct Params
 {
+  std::string fault = "none";
+  double misalign_y = 0.015;    // [m] belief error for fault:=misaligned
+  double dropout_after = 4.0;   // [s] for fault:=sensor_dropout
   double mass = 2.0, damping = 60.0, stiffness = 500.0;  // admittance (D = 60: see docs/contact_force_D200.png)
   double seat_overshoot = 0.01;  // reference ends 10 mm behind the seat face -> bounded push
   double force_limit = 20.0;
@@ -130,6 +139,15 @@ private:
         node_->declare_parameter<T>(n, def);
       return node_->get_parameter(n).get_value<T>();
     };
+    p_.fault = get("fault", p_.fault);
+    p_.misalign_y = get("misalign_y", p_.misalign_y);
+    p_.dropout_after = get("dropout_after", p_.dropout_after);
+    if (p_.fault != "none" && p_.fault != "misaligned" && p_.fault != "stiff" && p_.fault != "sensor_dropout")
+    {
+      RCLCPP_WARN(log_, "Unknown fault '%s' (use misaligned, stiff, sensor_dropout): running nominal.",
+                  p_.fault.c_str());
+      p_.fault = "none";
+    }
     p_.mass = get("mass", p_.mass);
     p_.damping = get("damping", p_.damping);
     p_.stiffness = get("stiffness", p_.stiffness);
@@ -146,8 +164,8 @@ private:
       const char* home = std::getenv("HOME");
       p_.log_dir = std::string(home ? home : "/tmp") + "/.ros/rh_cell_logs";
     }
-    RCLCPP_INFO(log_, "Admittance M=%.1f D=%.0f K=%.0f | force limit %.0f N | seat overshoot %.0f mm", p_.mass,
-                p_.damping, p_.stiffness, p_.force_limit, p_.seat_overshoot * 1000.0);
+    RCLCPP_INFO(log_, "fault=%s | Admittance M=%.1f D=%.0f K=%.0f | force limit %.0f N | seat overshoot %.0f mm",
+                p_.fault.c_str(), p_.mass, p_.damping, p_.stiffness, p_.force_limit, p_.seat_overshoot * 1000.0);
   }
 
   // ------------------------------------------------------------------ main control loop
@@ -185,6 +203,10 @@ private:
       prev = now;
       const double t = (now - t0).seconds();
 
+      if (p_.fault == "sensor_dropout" && t > p_.dropout_after)
+        ft_->setDropped(true);  // pretend the cable is cut
+      if (p_.fault == "misaligned")
+        offset_.y() = p_.misalign_y * std::min(1.0, t / 1.0);  // move to where the robot BELIEVES the port is
       ft_->update(dt);
       const bool alive = ft_->alive();
       const double f_ax = ft_->axial();  // force the environment applies along +insertion (contact < 0)
@@ -203,9 +225,10 @@ private:
       }
 
       // ---- admittance: the commanded depth gives way when the seat pushes back
-      s_cmd_ = adm.step(s_des, f_ax, dt);
+      //      (fault:=stiff switches it off: pure position control)
+      s_cmd_ = (p_.fault == "stiff") ? s_des : adm.step(s_des, f_ax, dt);
       Eigen::Isometry3d target = start_;
-      target.translation() += s_cmd_ * axis;
+      target.translation() += s_cmd_ * axis + offset_;
       streamer_->step(target, dt);
 
       const double depth = depthMeasured(axis);
@@ -263,14 +286,16 @@ private:
       ft_->update(dt);
       s_cmd_ = std::max(0.0, s_cmd_ - speed * dt);
       Eigen::Isometry3d target = start_;
-      target.translation() += s_cmd_ * axis;
+      target.translation() += s_cmd_ * axis + offset_;
       streamer_->step(target, dt);
       logRow(t_last_ + (now - t0).seconds(), s_cmd_, s_cmd_, depthMeasured(axis), ft_->alive(), false, "RETRACT");
     }
     const rclcpp::Time t_end = node_->now();  // settle at the pre-insert pose
+    Eigen::Isometry3d hold = start_;
+    hold.translation() += offset_;
     while (rclcpp::ok() && (node_->now() - t_end).seconds() < 0.5)
     {
-      streamer_->step(start_, period);
+      streamer_->step(hold, period);
       std::this_thread::sleep_for(10ms);
     }
   }
@@ -311,7 +336,7 @@ private:
     char stamp[32];
     const std::time_t now = std::time(nullptr);
     std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
-    log_path_ = p_.log_dir + "/run_none_" + stamp + ".csv";
+    log_path_ = p_.log_dir + "/run_" + p_.fault + "_" + stamp + ".csv";
     log_file_.open(log_path_);
     log_file_ << "t,s_des,s_cmd,depth,fx,fy,fz,f_axial,f_mag,ft_alive,guard,phase\n";
   }
@@ -383,6 +408,7 @@ private:
 
   Params p_;
   Eigen::Isometry3d start_ = Eigen::Isometry3d::Identity();
+  Eigen::Vector3d offset_ = Eigen::Vector3d::Zero();  // belief error (fault:=misaligned)
   std::string state_;
   double s_cmd_ = 0.0;
   double peak_ = 0.0, final_axial_ = 0.0, max_depth_ = 0.0, cycle_time_ = 0.0, t_last_ = 0.0;
