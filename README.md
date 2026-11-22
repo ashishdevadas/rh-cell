@@ -41,6 +41,7 @@ This project does not solve ITER's problems. It rebuilds some of their control a
 | 1.3 | Teleoperation with a guidance virtual fixture, push limit and dead-man | ✅ |
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ✅ |
 | 3 | Fault injection + FMEA ([docs/FMEA.md](docs/FMEA.md)) | ✅ |
+| 2.0 | Research extension: insertion under misalignment, benchmark with statistics | 🔄 in progress |
 
 ## Repository layout
 
@@ -186,6 +187,30 @@ ros2 run rh_cell_tasks force_insertion --ros-args -p fault:=misaligned   # or st
 ## Phase 3 (part 2): FMEA
 
 [docs/FMEA.md](docs/FMEA.md): 14 failure modes of the cell (insertion physics, sensor, interlock, teleoperation, planning), each with detection, mitigation, severity / occurrence / detection ratings and the run or test that exercises it. The highest-risk line is a **frozen or biased F/T sensor** (RPN 147): the watchdog only detects data that stops arriving, not data that is wrong. The most instructive line is the misaligned port: detection is reliable, but the impact peak can only be bounded outside the force loop (compliance, alignment check before contact).
+
+## RH Cell 2.0 (in progress): insertion under misalignment
+
+**Question:** can force control with contact-based search and recovery make a tight insertion succeed under misalignment where position control fails, with lower contact forces?
+
+**Setup.** A tight port (`world:=rh_cell_tight.sdf`): 74 mm opening for the 70 mm cassette (2 mm clearance per side) with a 5 mm x 45 deg lead-in chamfer. Benchmark mode of `force_insertion` (`-p offsets_mm:="0,1,2,3,4,5,6,8,10" -p repeats:=5 -p seed:=1`): before each trial the robot moves to where it *believes* the port is, the true centre plus a radial offset in a random direction. The same seed gives identical trials for every controller; `bench_report.py` plots the success rate with 95 % Wilson intervals.
+
+![Baseline benchmark](docs/bench_baseline.png)
+
+**Baseline** (5 trials per offset, wall friction 1.0):
+
+| Controller | 0-2 mm (inside the clearance) | 3-10 mm (chamfer or wall face) |
+|---|---|---|
+| B2 axial admittance | 15/15 seated, ~6 N | 0/30, peak 240-585 N |
+| B1 position only | 0/15: force guard trips at the seat (23-26 N) | 0/30, peak 465-710 N |
+
+Admittance halves the impact peak but does not change the success rate: a robot that is stiff sideways cannot slide down the chamfer. B1 also fails when centred because nothing limits the seating force.
+
+**Cartesian admittance (lateral compliance), first results.**
+- A planar contact model with stick-slip friction (`ros2 run rh_cell_core chamfer_demo`) predicts that sideways compliance lets the chamfer guide the cassette in up to 6.5 mm of offset, but only if the friction coefficient is below tan(45 deg) = 1 (wedging). Gazebo's default friction is exactly 1, so the worlds now set it explicitly (`rh_cell_tight_mu03.sdf`, mu = 0.3).
+- First Gazebo run: unstable (the cassette was driven 10 mm sideways). Cause: the lag of the 20 Hz force filter against near-rigid contact, reproduced in the unit tests (`StiffContact.*`). With a 50 Hz filter and lateral damping 500 N*s/m the controller is stable and corrects by the right amount (3.7 mm for a 4 mm offset).
+- But the first impact on the chamfer (about 430 N) still trips the force guard. In simulation the arm is perfectly rigid, so the force rises within one or two control periods, before any controller can react. A real arm, its sensor and RCC wrists have compliance; the next step adds a passive compliant wrist to the model.
+
+**Next:** passive compliant wrist, contact-state and jam detection, search and recovery beyond the chamfer, adaptive gains, sensor plausibility check, then the full benchmark (more trials, two friction levels) with statistics.
 
 ## Cell layout (metres, robot base frame)
 
