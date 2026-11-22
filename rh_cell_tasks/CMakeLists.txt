@@ -55,7 +55,7 @@ ament_target_dependencies(teleop_fixture
   sensor_msgs controller_manager_msgs)
 
 install(TARGETS insertion_sequence ft_monitor force_insertion teleop_fixture DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/plot_run.py scripts/plot_faults.py scripts/plot_teleop.py scripts/teleop_demo.py
+install(PROGRAMS scripts/plot_run.py scripts/plot_faults.py scripts/plot_teleop.py scripts/teleop_demo.py scripts/bench_report.py
         DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

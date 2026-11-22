@@ -12,6 +12,17 @@
 //   stiff           admittance switched off: pure position control into the seat
 //   sensor_dropout  the F/T stream stops 4 s into the insertion
 //
+// Controller (RH Cell 2.0): -p controller:=axial (default, admittance along the port axis)
+//                           -p controller:=position (no admittance, same as fault:=stiff)
+//
+// Benchmark (RH Cell 2.0, step 1b): -p offsets_mm:="0,2,4,6" -p repeats:=3 -p seed:=1
+//   Runs one insertion per (offset, repeat) from the pre-insert pose. Before each trial the robot
+//   moves sideways to where it BELIEVES the port is: the true port centre plus a radial offset in a
+//   random direction (same seed = same offsets and directions, so controllers are compared on
+//   identical trials). Trial order is shuffled. One summary CSV per benchmark:
+//   ~/.ros/rh_cell_logs/bench_<controller>_<stamp>.csv, plus one full log per trial.
+//   Use with world:=rh_cell_tight.sdf (2 mm clearance, 5 mm chamfer).
+//
 // Interlock (Phase 2): -p require_permit:=true  (start the sim with ic:=true)
 //   The node waits for the PLC motion permit before any motion, publishes a 10 Hz heartbeat and
 //   its force-guard / sensor status for the PLC, stops MoveIt trajectories when the permit drops,
@@ -43,9 +54,14 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <cstdint>
 #include <memory>
+#include <random>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit/planning_scene_interface/planning_scene_interface.hpp>
@@ -72,6 +88,10 @@ namespace
 struct Params
 {
   std::string fault = "none";
+  std::string controller = "axial";  // axial | position
+  std::string offsets_mm;            // benchmark: comma-separated radial offsets [mm]
+  int64_t repeats = 1;
+  int64_t seed = 1;
   double misalign_y = 0.015;    // [m] belief error for fault:=misaligned
   double dropout_after = 4.0;   // [s] for fault:=sensor_dropout
   double mass = 2.0, damping = 60.0, stiffness = 500.0;  // admittance (D = 60: see docs/contact_force_D200.png)
@@ -146,6 +166,8 @@ public:
 
     if (!streamer_->waitForJointStates(5.0) || ft_->samples() == 0)
       return fail("NO_SENSOR_DATA");
+    if (!p_.offsets_mm.empty())
+      return runBenchmark();
     std::this_thread::sleep_for(500ms);  // let the arm settle before zeroing the sensor
     if (!ft_->tare(0.5))
       return fail("TARE_FAILED");
@@ -190,6 +212,20 @@ private:
                   p_.fault.c_str());
       p_.fault = "none";
     }
+    p_.controller = get("controller", p_.controller);
+    if (p_.controller != "axial" && p_.controller != "position")
+    {
+      RCLCPP_WARN(log_, "Unknown controller '%s' (use axial, position): using axial.", p_.controller.c_str());
+      p_.controller = "axial";
+    }
+    p_.offsets_mm = listParam("offsets_mm");
+    p_.repeats = get("repeats", p_.repeats);
+    p_.seed = get("seed", p_.seed);
+    if (!p_.offsets_mm.empty() && p_.fault != "none")
+    {
+      RCLCPP_WARN(log_, "Benchmark mode sets its own offsets: fault '%s' ignored.", p_.fault.c_str());
+      p_.fault = "none";
+    }
     p_.require_permit = get("require_permit", p_.require_permit);
     p_.permit_timeout = get("permit_timeout", p_.permit_timeout);
     p_.mass = get("mass", p_.mass);
@@ -208,8 +244,9 @@ private:
       const char* home = std::getenv("HOME");
       p_.log_dir = std::string(home ? home : "/tmp") + "/.ros/rh_cell_logs";
     }
-    RCLCPP_INFO(log_, "fault=%s | Admittance M=%.1f D=%.0f K=%.0f | force limit %.0f N | seat overshoot %.0f mm",
-                p_.fault.c_str(), p_.mass, p_.damping, p_.stiffness, p_.force_limit, p_.seat_overshoot * 1000.0);
+    RCLCPP_INFO(log_, "fault=%s | controller=%s | Admittance M=%.1f D=%.0f K=%.0f | force limit %.0f N | seat overshoot %.0f mm",
+                p_.fault.c_str(), p_.controller.c_str(), p_.mass, p_.damping, p_.stiffness, p_.force_limit,
+                p_.seat_overshoot * 1000.0);
   }
 
   // ------------------------------------------------------------------ main control loop
@@ -287,7 +324,7 @@ private:
 
       // ---- admittance: the commanded depth gives way when the seat pushes back
       //      (fault:=stiff switches it off: pure position control)
-      s_cmd_ = (p_.fault == "stiff") ? s_des : adm.step(s_des, f_ax, dt);
+      s_cmd_ = (p_.fault == "stiff" || p_.controller == "position") ? s_des : adm.step(s_des, f_ax, dt);
       Eigen::Isometry3d target = start_;
       target.translation() += s_cmd_ * axis + offset_;
       streamer_->step(target, dt);
@@ -327,6 +364,159 @@ private:
         return logFault("FAULT_NOT_SEATED", "Reference reached the end but the cassette never seated");
     }
     return "ABORTED";
+  }
+
+  // ------------------------------------------------------------------ benchmark (RH Cell 2.0, step 1b)
+  // offsets_mm may arrive as a string ("0,2,4"), a single number (4) or an array ([0, 2, 4]).
+  std::string listParam(const std::string& n)
+  {
+    if (!node_->has_parameter(n))
+      return "";
+    const rclcpp::Parameter v = node_->get_parameter(n);
+    std::ostringstream out;
+    switch (v.get_type())
+    {
+      case rclcpp::ParameterType::PARAMETER_STRING:
+        return v.as_string();
+      case rclcpp::ParameterType::PARAMETER_INTEGER:
+        return std::to_string(v.as_int());
+      case rclcpp::ParameterType::PARAMETER_DOUBLE:
+        out << v.as_double();
+        return out.str();
+      case rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY:
+        for (const auto x : v.as_integer_array())
+          out << x << ",";
+        return out.str();
+      case rclcpp::ParameterType::PARAMETER_DOUBLE_ARRAY:
+        for (const auto x : v.as_double_array())
+          out << x << ",";
+        return out.str();
+      default:
+        return "";
+    }
+  }
+
+  int runBenchmark()
+  {
+    std::vector<double> offsets;
+    {
+      std::stringstream ss(p_.offsets_mm);
+      std::string tok;
+      while (std::getline(ss, tok, ','))
+        if (tok.find_first_not_of(" ") != std::string::npos)
+          offsets.push_back(std::stod(tok));
+    }
+    if (offsets.empty() || p_.repeats < 1)
+      return fail("NO_TRIALS");
+
+    // All trial parameters are drawn before the first trial: the same seed gives the same
+    // offsets, directions and order whatever happens during the runs.
+    constexpr double kPi = 3.14159265358979323846;
+    std::mt19937 rng(static_cast<unsigned>(p_.seed));
+    std::uniform_real_distribution<double> direction(-kPi, kPi);
+    std::vector<std::pair<double, double>> trials;  // (radial offset [mm], direction [rad])
+    for (int64_t r = 0; r < p_.repeats; ++r)
+    {
+      std::vector<double> o = offsets;
+      std::shuffle(o.begin(), o.end(), rng);
+      for (const double mm : o)
+        trials.emplace_back(mm, direction(rng));
+    }
+
+    std::filesystem::create_directories(p_.log_dir);
+    const std::string summary_path = p_.log_dir + "/bench_" + p_.controller + "_" + stampNow() + ".csv";
+    std::ofstream summary(summary_path);
+    summary << "trial,controller,seed,offset_mm,dir_deg,dy_mm,dz_mm,result,peak_N,final_axial_N,max_depth_mm,"
+               "time_s,log\n";
+    RCLCPP_INFO(log_, "BENCHMARK: %zu trials | controller %s | seed %ld | offsets [%s] mm x %ld", trials.size(),
+                p_.controller.c_str(), static_cast<long>(p_.seed), p_.offsets_mm.c_str(),
+                static_cast<long>(p_.repeats));
+
+    if (!streamer_->activate())
+      return fail("CONTROLLER_SWITCH_FAILED");
+    int seated = 0;
+    std::size_t done = 0;
+    for (std::size_t k = 0; k < trials.size() && rclcpp::ok(); ++k)
+    {
+      const double mm = trials[k].first, dir = trials[k].second;
+      const Eigen::Vector3d off(0.0, mm * 1e-3 * std::cos(dir), mm * 1e-3 * std::sin(dir));
+      const std::string res = runTrial(static_cast<int>(k + 1), off);
+      ++done;
+      if (res == "SEATED")
+        ++seated;
+      char line[640];
+      std::snprintf(line, sizeof(line), "%zu,%s,%ld,%.2f,%.1f,%.3f,%.3f,%s,%.2f,%.2f,%.2f,%.2f,%s\n", k + 1,
+                    p_.controller.c_str(), static_cast<long>(p_.seed), mm, dir * 180.0 / kPi, off.y() * 1e3,
+                    off.z() * 1e3, res.c_str(), peak_, final_axial_, max_depth_ * 1e3, cycle_time_, log_path_.c_str());
+      summary << line;
+      summary.flush();
+      RCLCPP_INFO(log_, "TRIAL %zu/%zu: offset %.1f mm at %.0f deg -> %s | peak %.1f N | depth %.1f mm", k + 1,
+                  trials.size(), mm, dir * 180.0 / kPi, res.c_str(), peak_, max_depth_ * 1e3);
+      if (res == "TARE_FAILED" || res == "ABORTED")
+        break;
+    }
+    streamer_->deactivate();
+    moveJoints(rh_cell::kReadyJoints);
+    setState("BENCHMARK_DONE");
+    RCLCPP_INFO(log_, "BENCHMARK DONE: %d/%zu seated (%zu planned) | controller %s | summary %s", seated, done,
+                trials.size(), p_.controller.c_str(), summary_path.c_str());
+    return 0;
+  }
+
+  // One trial from the pre-insert pose: move sideways to the believed port, tare, insert, back out,
+  // return to the nominal pre-insert pose. Streaming stays active between trials.
+  std::string runTrial(int k, const Eigen::Vector3d& off)
+  {
+    peak_ = final_axial_ = max_depth_ = cycle_time_ = 0.0;
+    guard_latched_ = false;
+    s_cmd_ = 0.0;
+    setState("TRIAL_MOVE");
+    moveOffset(off, 1.5);
+    if (!ft_->tare(0.5))
+      return "TARE_FAILED";
+    char tag[64];
+    std::snprintf(tag, sizeof(tag), "bench_%s_t%03d", p_.controller.c_str(), k);
+    openLog(tag);
+    const std::string res = insertLoop();
+    retract(res == "SEATED" ? p_.v_retract : 0.01);  // also after FAULT_TRACKING: the next trial needs room
+    log_file_.close();
+    moveOffset(Eigen::Vector3d::Zero(), 1.5);
+    return res;
+  }
+
+  // Smooth sideways move of the believed port position (offset_) at the current depth, then settle.
+  void moveOffset(const Eigen::Vector3d& to, double duration)
+  {
+    const Eigen::Vector3d from = offset_;
+    const double period = 1.0 / p_.rate;
+    const rclcpp::Time t0 = node_->now();
+    rclcpp::Time prev = t0;
+    Eigen::Isometry3d target = start_;
+    while (rclcpp::ok())
+    {
+      const rclcpp::Time now = node_->now();
+      const double dt = (now - prev).seconds();
+      if (dt < period * 0.999)
+      {
+        std::this_thread::sleep_for(500us);
+        continue;
+      }
+      prev = now;
+      const double u = std::min(1.0, (now - t0).seconds() / duration);
+      offset_ = from + u * u * (3.0 - 2.0 * u) * (to - from);
+      target = start_;
+      target.translation() += s_cmd_ * Eigen::Vector3d::UnitX() + offset_;
+      streamer_->step(target, dt);
+      ft_->update(dt);
+      if (u >= 1.0)
+        break;
+    }
+    const rclcpp::Time t_end = node_->now();
+    while (rclcpp::ok() && (node_->now() - t_end).seconds() < 0.5)
+    {
+      streamer_->step(target, period);
+      std::this_thread::sleep_for(10ms);
+    }
   }
 
   // Back out along the axis to the pre-insert pose (position control, logged).
@@ -436,13 +626,18 @@ private:
     state_pub_->publish(m);
   }
 
-  void openLog()
+  static std::string stampNow()
   {
-    std::filesystem::create_directories(p_.log_dir);
     char stamp[32];
     const std::time_t now = std::time(nullptr);
     std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", std::localtime(&now));
-    log_path_ = p_.log_dir + "/run_" + p_.fault + "_" + stamp + ".csv";
+    return stamp;
+  }
+
+  void openLog(const std::string& tag = "")
+  {
+    std::filesystem::create_directories(p_.log_dir);
+    log_path_ = p_.log_dir + "/run_" + (tag.empty() ? p_.fault : tag) + "_" + stampNow() + ".csv";
     log_file_.open(log_path_);
     log_file_ << "t,s_des,s_cmd,depth,fx,fy,fz,f_axial,f_mag,ft_alive,guard,phase\n";
   }
