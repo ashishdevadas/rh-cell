@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  rh-cell operator screen for CS-Studio Phoebus. Talks only to the EPICS IOC (PV prefix RH:).
+  Open: phoebus.sh -resource rh_cell.bob   (the IOC must be running: ros2 run rh_cell_ic epics_ioc)
+-->
+<display version="2.0.0">
+  <name>rh-cell operator</name>
+  <width>720</width>
+  <height>470</height>
+  <background_color>
+    <color red="40" green="44" blue="52"/>
+  </background_color>
+
+  <!-- ===================================================== title -->
+  <widget type="label" version="2.0.0">
+    <name>title</name>
+    <text>Remote-Handling Cell — Interlock &amp; Status</text>
+    <x>20</x><y>12</y><width>680</width><height>32</height>
+    <font><font family="Liberation Sans" style="BOLD" size="20.0"/></font>
+    <foreground_color><color red="235" green="235" blue="235"/></foreground_color>
+  </widget>
+
+  <!-- ===================================================== permit -->
+  <widget type="group" version="2.0.0">
+    <name>permit_group</name>
+    <x>20</x><y>55</y><width>330</width><height>150</height>
+    <style>3</style>
+    <background_color><color red="52" green="57" blue="66"/></background_color>
+    <widget type="label" version="2.0.0">
+      <name>permit_lbl</name>
+      <text>MOTION PERMIT</text>
+      <x>15</x><y>10</y><width>200</width><height>25</height>
+      <font><font family="Liberation Sans" style="BOLD" size="14.0"/></font>
+      <foreground_color><color red="235" green="235" blue="235"/></foreground_color>
+    </widget>
+    <widget type="led" version="2.0.0">
+      <name>permit_led</name>
+      <pv_name>RH:PERMIT</pv_name>
+      <x>230</x><y>8</y><width>80</width><height>30</height>
+      <square>true</square>
+      <labels_from_pv>false</labels_from_pv>
+      <off_label>OFF</off_label>
+      <on_label>ON</on_label>
+      <off_color><color red="200" green="30" blue="30"/></off_color>
+      <on_color><color red="30" green="190" blue="60"/></on_color>
+      <font><font family="Liberation Sans" style="BOLD" size="14.0"/></font>
+    </widget>
+    <widget type="label" version="2.0.0">
+      <name>fo_lbl</name>
+      <text>First-out</text>
+      <x>15</x><y>55</y><width>100</width><height>25</height>
+      <foreground_color><color red="200" green="200" blue="200"/></foreground_color>
+    </widget>
+    <widget type="textupdate" version="2.0.0">
+      <name>first_out</name>
+      <pv_name>RH:FIRST_OUT_STR</pv_name>
+      <x>15</x><y>80</y><width>295</width><height>40</height>
+      <font><font family="Liberation Sans" style="BOLD" size="18.0"/></font>
+      <foreground_color><color red="255" green="200" blue="60"/></foreground_color>
+      <background_color><color red="30" green="32" blue="38"/></background_color>
+      <transparent>false</transparent>
+      <horizontal_alignment>1</horizontal_alignment>
+      <vertical_alignment>1</vertical_alignment>
+    </widget>
+  </widget>
+
+  <!-- ===================================================== inputs -->
+  <widget type="group" version="2.0.0">
+    <name>inputs_group</name>
+    <x>370</x><y>55</y><width>330</width><height>230</height>
+    <style>3</style>
+    <background_color><color red="52" green="57" blue="66"/></background_color>
+    <widget type="label" version="2.0.0">
+      <name>inputs_lbl</name>
+      <text>INTERLOCK INPUTS (green = healthy)</text>
+      <x>15</x><y>10</y><width>300</width><height>25</height>
+      <font><font family="Liberation Sans" style="BOLD" size="14.0"/></font>
+      <foreground_color><color red="235" green="235" blue="235"/></foreground_color>
+    </widget>
+    <widget type="led" version="2.0.0"><name>in1</name><pv_name>RH:IN_ESTOP</pv_name>
+      <x>15</x><y>45</y><width>24</width><height>24</height>
+      <off_color><color red="200" green="30" blue="30"/></off_color><on_color><color red="30" green="190" blue="60"/></on_color></widget>
+    <widget type="label" version="2.0.0"><name>l1</name><text>1  E-stop chain</text>
+      <x>50</x><y>45</y><width>260</width><height>24</height>
+      <foreground_color><color red="220" green="220" blue="220"/></foreground_color></widget>
+    <widget type="led" version="2.0.0"><name>in2</name><pv_name>RH:IN_DOOR</pv_name>
+      <x>15</x><y>80</y><width>24</width><height>24</height>
+      <off_color><color red="200" green="30" blue="30"/></off_color><on_color><color red="30" green="190" blue="60"/></on_color></widget>
+    <widget type="label" version="2.0.0"><name>l2</name><text>2  Cell door closed</text>
+      <x>50</x><y>80</y><width>260</width><height>24</height>
+      <foreground_color><color red="220" green="220" blue="220"/></foreground_color></widget>
+    <widget type="led" version="2.0.0"><name>in3</name><pv_name>RH:IN_GUARD</pv_name>
+      <x>15</x><y>115</y><width>24</width><height>24</height>
+      <off_color><color red="200" green="30" blue="30"/></off_color><on_color><color red="30" green="190" blue="60"/></on_color></widget>
+    <widget type="label" version="2.0.0"><name>l3</name><text>3  Force guard</text>
+      <x>50</x><y>115</y><width>260</width><height>24</height>
+      <foreground_color><color red="220" green="220" blue="220"/></foreground_color></widget>
+    <widget type="led" version="2.0.0"><name>in4</name><pv_name>RH:IN_FT</pv_name>
+      <x>15</x><y>150</y><width>24</width><height>24</height>
+      <off_color><color red="200" green="30" blue="30"/></off_color><on_color><color red="30" green="190" blue="60"/></on_color></widget>
+    <widget type="label" version="2.0.0"><name>l4</name><text>4  F/T sensor alive</text>
+      <x>50</x><y>150</y><width>260</width><height>24</height>
+      <foreground_color><color red="220" green="220" blue="220"/></foreground_color></widget>
+    <widget type="led" version="2.0.0"><name>in5</name><pv_name>RH:IN_HEARTBEAT</pv_name>
+      <x>15</x><y>185</y><width>24</width><height>24</height>
+      <off_color><color red="200" green="30" blue="30"/></off_color><on_color><color red="30" green="190" blue="60"/></on_color></widget>
+    <widget type="label" version="2.0.0"><name>l5</name><text>5  Controller heartbeat</text>
+      <x>50</x><y>185</y><width>260</width><height>24</height>
+      <foreground_color><color red="220" green="220" blue="220"/></foreground_color></widget>
+  </widget>
+
+  <!-- ===================================================== process values -->
+  <widget type="group" version="2.0.0">
+    <name>pv_group</name>
+    <x>20</x><y>215</y><width>330</width><height>150</height>
+    <style>3</style>
+    <background_color><color red="52" green="57" blue="66"/></background_color>
+    <widget type="label" version="2.0.0"><name>st_l</name><text>Task state</text>
+      <x>15</x><y>10</y><width>100</width><height>25</height>
+      <foreground_color><color red="200" green="200" blue="200"/></foreground_color></widget>
+    <widget type="textupdate" version="2.0.0"><name>state</name><pv_name>RH:STATE</pv_name>
+      <x>120</x><y>10</y><width>190</width><height>25</height>
+      <font><font family="Liberation Sans" style="BOLD" size="13.0"/></font>
+      <foreground_color><color red="120" green="200" blue="255"/></foreground_color>
+      <background_color><color red="30" green="32" blue="38"/></background_color><transparent>false</transparent></widget>
+    <widget type="label" version="2.0.0"><name>d_l</name><text>Insertion depth</text>
+      <x>15</x><y>45</y><width>120</width><height>25</height>
+      <foreground_color><color red="200" green="200" blue="200"/></foreground_color></widget>
+    <widget type="textupdate" version="2.0.0"><name>depth</name><pv_name>RH:DEPTH</pv_name>
+      <x>140</x><y>45</y><width>170</width><height>25</height><show_units>true</show_units>
+      <foreground_color><color red="235" green="235" blue="235"/></foreground_color>
+      <background_color><color red="30" green="32" blue="38"/></background_color><transparent>false</transparent></widget>
+    <widget type="label" version="2.0.0"><name>fz_l</name><text>Axial force Fz</text>
+      <x>15</x><y>80</y><width>120</width><height>25</height>
+      <foreground_color><color red="200" green="200" blue="200"/></foreground_color></widget>
+    <widget type="textupdate" version="2.0.0"><name>fz</name><pv_name>RH:FZ</pv_name>
+      <x>140</x><y>80</y><width>170</width><height>25</height><show_units>true</show_units>
+      <foreground_color><color red="235" green="235" blue="235"/></foreground_color>
+      <background_color><color red="30" green="32" blue="38"/></background_color><transparent>false</transparent></widget>
+    <widget type="label" version="2.0.0"><name>fm_l</name><text>|F|</text>
+      <x>15</x><y>115</y><width>120</width><height>25</height>
+      <foreground_color><color red="200" green="200" blue="200"/></foreground_color></widget>
+    <widget type="textupdate" version="2.0.0"><name>fmag</name><pv_name>RH:FMAG</pv_name>
+      <x>140</x><y>115</y><width>170</width><height>25</height><show_units>true</show_units>
+      <foreground_color><color red="235" green="235" blue="235"/></foreground_color>
+      <background_color><color red="30" green="32" blue="38"/></background_color><transparent>false</transparent></widget>
+  </widget>
+
+  <!-- ===================================================== operator controls -->
+  <widget type="action_button" version="3.0.0">
+    <name>estop</name>
+    <text>E-STOP</text>
+    <x>20</x><y>385</y><width>150</width><height>65</height>
+    <actions>
+      <action type="write_pv"><pv_name>RH:ESTOP_OK</pv_name><value>0</value><description>Press e-stop</description></action>
+    </actions>
+    <font><font family="Liberation Sans" style="BOLD" size="18.0"/></font>
+    <foreground_color><color red="255" green="255" blue="255"/></foreground_color>
+    <background_color><color red="200" green="20" blue="20"/></background_color>
+  </widget>
+  <widget type="action_button" version="3.0.0">
+    <name>release</name>
+    <text>Release e-stop</text>
+    <x>180</x><y>385</y><width>130</width><height>30</height>
+    <actions>
+      <action type="write_pv"><pv_name>RH:ESTOP_OK</pv_name><value>1</value><description>Release e-stop</description></action>
+    </actions>
+  </widget>
+  <widget type="action_button" version="3.0.0">
+    <name>door_open</name>
+    <text>Open door</text>
+    <x>180</x><y>420</y><width>130</width><height>30</height>
+    <actions>
+      <action type="write_pv"><pv_name>RH:DOOR_CLOSED</pv_name><value>0</value><description>Open door</description></action>
+    </actions>
+  </widget>
+  <widget type="action_button" version="3.0.0">
+    <name>door_close</name>
+    <text>Close door</text>
+    <x>320</x><y>420</y><width>130</width><height>30</height>
+    <actions>
+      <action type="write_pv"><pv_name>RH:DOOR_CLOSED</pv_name><value>1</value><description>Close door</description></action>
+    </actions>
+  </widget>
+  <widget type="action_button" version="3.0.0">
+    <name>reset</name>
+    <text>RESET</text>
+    <x>550</x><y>385</y><width>150</width><height>65</height>
+    <actions>
+      <action type="write_pv"><pv_name>RH:RESET</pv_name><value>1</value><description>Reset interlock</description></action>
+    </actions>
+    <font><font family="Liberation Sans" style="BOLD" size="18.0"/></font>
+    <foreground_color><color red="20" green="20" blue="20"/></foreground_color>
+    <background_color><color red="250" green="200" blue="40"/></background_color>
+  </widget>
+  <widget type="label" version="2.0.0">
+    <name>hint</name>
+    <text>Permit latches ON only on RESET with all inputs healthy. No automatic restart.</text>
+    <x>370</x><y>300</y><width>330</width><height>60</height>
+    <wrap_words>true</wrap_words>
+    <foreground_color><color red="170" green="170" blue="170"/></foreground_color>
+  </widget>
+</display>

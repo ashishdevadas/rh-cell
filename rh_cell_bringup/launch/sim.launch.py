@@ -3,6 +3,7 @@ F/T bridge to ROS, MoveIt 2 and RViz.
 
     ros2 launch rh_cell_bringup sim.launch.py
     ros2 launch rh_cell_bringup sim.launch.py gazebo_gui:=false launch_rviz:=false   # headless
+    ros2 launch rh_cell_bringup sim.launch.py ic:=true     # + Phase 2 I&C layer (EPICS IOC + PLC bridge)
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
@@ -81,13 +82,25 @@ def generate_launch_description():
         output="screen",
     )
 
+    # 6. Phase 2 I&C layer: EPICS IOC (operator PVs) + PLC bridge (motion permit)
+    ic_layer = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([FindPackageShare("rh_cell_bringup"), "launch", "ic.launch.py"])
+        ),
+        launch_arguments={"plc_mode": LaunchConfiguration("plc_mode")}.items(),
+        condition=IfCondition(LaunchConfiguration("ic")),
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument("ur_type", default_value="ur5e"),
         DeclareLaunchArgument("gazebo_gui", default_value="true"),
         DeclareLaunchArgument("launch_rviz", default_value="true"),
+        DeclareLaunchArgument("ic", default_value="false", description="Start the Phase 2 I&C layer"),
+        DeclareLaunchArgument("plc_mode", default_value="sim", choices=["sim", "openplc"]),
         sim,
         ft_bridge,
         moveit,
         rviz,
         TimerAction(period=8.0, actions=[fwd_pos]),
+        ic_layer,
     ])
