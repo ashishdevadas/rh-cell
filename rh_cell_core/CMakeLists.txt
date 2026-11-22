@@ -3,7 +3,7 @@ project(rh_cell_core)
 find_package(ament_cmake REQUIRED)
 
 # Plain C++17 library. Deliberately NO ROS includes: this code must run anywhere.
-add_library(rh_cell_core src/admittance_1d.cpp src/force_guard.cpp)
+add_library(rh_cell_core src/admittance_1d.cpp src/force_guard.cpp src/insertion_monitor.cpp)
 target_compile_features(rh_cell_core PUBLIC cxx_std_17)
 target_compile_options(rh_cell_core PRIVATE -Wall -Wextra -Wpedantic)
 target_include_directories(rh_cell_core PUBLIC

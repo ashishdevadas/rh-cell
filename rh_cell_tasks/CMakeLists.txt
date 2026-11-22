@@ -14,6 +14,8 @@ find_package(moveit_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rh_cell_core REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(controller_manager_msgs REQUIRED)
 
 add_executable(insertion_sequence src/insertion_sequence.cpp)
 target_compile_features(insertion_sequence PUBLIC cxx_std_17)
@@ -34,6 +36,16 @@ target_include_directories(ft_monitor PRIVATE include)
 target_link_libraries(ft_monitor rh_cell_core::rh_cell_core)
 ament_target_dependencies(ft_monitor rclcpp geometry_msgs)
 
-install(TARGETS insertion_sequence ft_monitor DESTINATION lib/${PROJECT_NAME})
+# Force-controlled insertion (Step 3c-2b)
+add_executable(force_insertion src/force_insertion.cpp src/cell.cpp src/cartesian_streamer.cpp)
+target_compile_features(force_insertion PUBLIC cxx_std_17)
+target_include_directories(force_insertion PRIVATE include)
+target_link_libraries(force_insertion rh_cell_core::rh_cell_core)
+ament_target_dependencies(force_insertion
+  rclcpp moveit_core moveit_ros_planning_interface geometry_msgs moveit_msgs shape_msgs std_msgs
+  sensor_msgs controller_manager_msgs)
+
+install(TARGETS insertion_sequence ft_monitor force_insertion DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/plot_run.py DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

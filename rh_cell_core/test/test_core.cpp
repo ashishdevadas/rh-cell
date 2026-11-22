@@ -6,6 +6,7 @@
 
 #include "rh_cell_core/admittance_1d.hpp"
 #include "rh_cell_core/force_guard.hpp"
+#include "rh_cell_core/insertion_monitor.hpp"
 #include "rh_cell_core/signal.hpp"
 
 using rh_cell_core::Admittance1D;
@@ -90,4 +91,72 @@ TEST(Signal, WatchdogTimesOut)
   w.feed(1.00);
   EXPECT_TRUE(w.alive(1.04));
   EXPECT_FALSE(w.alive(1.06));
+}
+
+// ---------------------------------------------------------------- insertion monitor
+using rh_cell_core::InsertionMonitor;
+using rh_cell_core::InsertionPhase;
+
+// Most tests confirm contact on the first sample; the debounce has its own tests below.
+rh_cell_core::InsertionMonitorParams noDebounce()
+{
+  rh_cell_core::InsertionMonitorParams p;
+  p.contact_samples = 1;
+  return p;
+}
+
+TEST(InsertionMonitor, FreeSpaceStaysFree)
+{
+  InsertionMonitor m({});
+  for (double d = 0.0; d < 0.14; d += 0.001) m.update(d, 0.3);
+  EXPECT_EQ(m.phase(), InsertionPhase::FREE);
+}
+
+TEST(InsertionMonitor, EarlyContactIsAFault)
+{
+  InsertionMonitor m(noDebounce());  // expected depth 0.15 m, tolerance 0.01 m
+  m.update(0.03, 0.0);
+  EXPECT_EQ(m.update(0.03, 4.0), InsertionPhase::EARLY_CONTACT) << "Touching at 30 mm means the port is not there.";
+  EXPECT_EQ(m.update(0.15, 5.0), InsertionPhase::EARLY_CONTACT) << "A fault must latch.";
+}
+
+TEST(InsertionMonitor, SeatsAfterStableForce)
+{
+  InsertionMonitor m(noDebounce());
+  for (int i = 0; i < 49; ++i) EXPECT_NE(m.update(0.152, 5.2), InsertionPhase::SEATED);
+  EXPECT_EQ(m.update(0.152, 5.2), InsertionPhase::SEATED) << "50 samples inside 5 +/- 1 N = seated.";
+}
+
+TEST(InsertionMonitor, ForceOutsideBandDoesNotSeat)
+{
+  InsertionMonitor m({});
+  for (int i = 0; i < 200; ++i) m.update(0.152, 9.0);
+  EXPECT_EQ(m.phase(), InsertionPhase::CONTACT);
+}
+
+TEST(InsertionMonitor, ReboundAfterLegitContactIsNotEarly)
+{
+  InsertionMonitor m(noDebounce());
+  m.update(0.150, 6.0);  // legitimate first touch at the seat
+  EXPECT_EQ(m.update(0.130, 6.0), InsertionPhase::CONTACT) << "Bouncing back 20 mm after a real touch is not a misalignment.";
+}
+
+TEST(InsertionMonitor, JitterSpikesInFreeSpaceAreNotContact)
+{
+  InsertionMonitor m({});  // default: 10 samples to confirm
+  // 2.1 N spikes for a few samples at 8 mm depth (seen in simulation from joint jitter)
+  for (int k = 0; k < 20; ++k)
+  {
+    for (int i = 0; i < 4; ++i) m.update(0.008, 2.1);
+    m.update(0.008, 0.3);
+  }
+  EXPECT_EQ(m.phase(), InsertionPhase::FREE);
+}
+
+TEST(InsertionMonitor, SustainedEarlyContactIsStillCaught)
+{
+  InsertionMonitor m({});
+  InsertionPhase ph = InsertionPhase::FREE;
+  for (int i = 0; i < 10; ++i) ph = m.update(0.03, 4.0);
+  EXPECT_EQ(ph, InsertionPhase::EARLY_CONTACT) << "10 samples (40 ms) of real contact at 30 mm = fault.";
 }
