@@ -15,7 +15,7 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 | 1.1 | Cell layout + scripted remove / insert / extract sequence | ✅ |
 | 1.2 | Force/torque sensing + admittance-controlled insertion with a force limit | ✅ |
 | 1.3 | Teleoperation with a guidance virtual fixture, push limit and dead-man | ✅ |
-| 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ⏳ |
+| 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ✅ |
 | 3 | Fault injection, FMEA, demo video | 🟡 fault injection done |
 
 ## Phase 1.2 progress: force/torque sensor check
@@ -89,6 +89,36 @@ ros2 run rh_cell_tasks teleop_fixture                     # add  --ros-args -p u
 ros2 run rh_cell_tasks teleop_demo.py                     # after "Teleop active"; or teleop_twist_keyboard:
 ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r cmd_vel:=/rh/teleop_cmd
 ```
+
+## Phase 2: interlock and EPICS operator interface
+
+![E-stop during insertion](docs/estop_interlock.gif)
+
+The motion permit is a **latch**, like a safety relay: set only by a RESET rising edge while all five inputs are healthy, dropped immediately when any input fails, never restarted automatically. The first input that dropped is reported (**first-out**), so the operator sees the cause, not the cascade. A signal that stops arriving counts as unhealthy (fail-safe).
+
+| # | Input (1 = healthy) | Source |
+|---|---|---|
+| 1 | E-stop chain | operator PV `RH:ESTOP_OK` |
+| 2 | Cell door closed | operator PV `RH:DOOR_CLOSED` |
+| 3 | Force guard not tripped | task node |
+| 4 | F/T sensor alive | raw sensor topic **and** the task node's watchdog |
+| 5 | Controller heartbeat | 10 Hz from the task node |
+
+- `rh_cell_ic/interlock.py`: the logic (soft PLC), and the same logic in IEC 61131-3 Structured Text (`plc/rh_cell_interlock.st`) for the OpenPLC runtime over Modbus TCP, with a watchdog counter so a crashed bridge cannot leave the permit on.
+- `epics_ioc.py`: EPICS Channel Access IOC (caproto), 16 PVs (`RH:PERMIT`, `RH:FIRST_OUT_STR`, `RH:ESTOP_OK`, `RH:RESET`, …); `phoebus/rh_cell.bob` is the operator screen for CS-Studio Phoebus.
+- `force_insertion` with `require_permit:=true` waits for the permit, stops MoveIt when it drops, and freezes the streamed insertion. After an e-stop, door or heartbeat trip nothing moves until reset; after a force or sensor fault the controller may back out on its own.
+
+![E-stop plot](docs/estop_interlock.png)
+
+The plot is the exact record (EPICS PVs logged by the scripted operator `estop_demo`); the labels in the GIF above were placed from the video. Sequence: RESET, insertion, **e-stop at 60 mm: frozen**, release (still frozen: no automatic restart), RESET, retreat. At the end the task node exits, its heartbeat stops, and the permit drops with first-out HEARTBEAT LOST.
+
+```bash
+ros2 launch rh_cell_bringup sim.launch.py ic:=true
+ros2 run rh_cell_tasks force_insertion --ros-args -p require_permit:=true
+ros2 run rh_cell_ic estop_demo          # or: python3 -m caproto.commandline.put RH:ESTOP_OK 0 / RH:RESET 1
+```
+
+**Limits:** a functional demonstration of interlock logic, not a safety-rated design. A real permit runs on a safety PLC with hard-wired e-stop and door channels, not over Modbus TCP. The OpenPLC path is tested against a minimal Modbus server running the same logic, not against the OpenPLC runtime itself.
 
 ## Phase 3 (part 1): fault injection
 

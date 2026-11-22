@@ -12,6 +12,13 @@
 //   stiff           admittance switched off: pure position control into the seat
 //   sensor_dropout  the F/T stream stops 4 s into the insertion
 //
+// Interlock (Phase 2): -p require_permit:=true  (start the sim with ic:=true)
+//   The node waits for the PLC motion permit before any motion, publishes a 10 Hz heartbeat and
+//   its force-guard / sensor status for the PLC, stops MoveIt trajectories when the permit drops,
+//   and freezes the streamed insertion in place. After an e-stop, door or heartbeat trip nothing
+//   moves until the operator resets; after a fault the controller detected itself (force, sensor)
+//   it may back the cassette out on its own.
+//
 // Sequence
 //   1. MoveIt: ready -> pre-insert (taught joint configuration, like Phase 1.1)
 //   2. Tare the F/T sensor at rest (removes the cassette weight in this orientation)
@@ -29,6 +36,7 @@
 //   Tracking check    |q_cmd - q_meas| > 0.15 rad (robot blocked)  FAULT_TRACKING (stop, no retract)
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -44,6 +52,9 @@
 #include <moveit_msgs/msg/attached_collision_object.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <std_msgs/msg/float64.hpp>
+#include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 
 #include "rh_cell_core/admittance_1d.hpp"
@@ -74,6 +85,8 @@ struct Params
   double rate = 250.0;
   double hold_time = 2.0;
   double seat_timeout = 15.0;
+  bool require_permit = false;  // Phase 2: obey the PLC motion permit
+  double permit_timeout = 120.0;
   std::string log_dir;
 };
 
@@ -92,6 +105,29 @@ public:
     streamer_ = std::make_unique<rh_cell::CartesianStreamer>(node_, mg_.getRobotModel());
     ft_ = std::make_unique<rh_cell::FtSensor>(node_, "/rh/ft");
     state_pub_ = node_->create_publisher<std_msgs::msg::String>("/rh/state", rclcpp::QoS(1).transient_local());
+
+    // ---- Phase 2: status for the PLC bridge / EPICS IOC, permit from the PLC
+    guard_pub_ = node_->create_publisher<std_msgs::msg::Bool>("/rh/guard_tripped", 10);
+    alive_pub_ = node_->create_publisher<std_msgs::msg::Bool>("/rh/ft_alive", 10);
+    depth_pub_ = node_->create_publisher<std_msgs::msg::Float64>("/rh/depth", 10);
+    const auto latched = rclcpp::QoS(1).transient_local();
+    permit_sub_ = node_->create_subscription<std_msgs::msg::Bool>(
+        "/rh/permit", latched, [this](const std_msgs::msg::Bool::SharedPtr m) {
+          const bool was = permit_.exchange(m->data);
+          if (p_.require_permit && was && !m->data && moveit_busy_)
+          {
+            RCLCPP_WARN(log_, "Permit withdrawn during a MoveIt trajectory: stopping");
+            mg_.stop();
+          }
+        });
+    first_out_sub_ = node_->create_subscription<std_msgs::msg::Int32>(
+        "/rh/first_out", latched, [this](const std_msgs::msg::Int32::SharedPtr m) { first_out_ = m->data; });
+    heartbeat_pub_ = node_->create_publisher<std_msgs::msg::Bool>("/rh/heartbeat", 10);
+    heartbeat_timer_ = node_->create_wall_timer(100ms, [this] {
+      std_msgs::msg::Bool b;
+      b.data = true;
+      heartbeat_pub_->publish(b);
+    });
   }
 
   int run()
@@ -99,6 +135,8 @@ public:
     setState("SETUP");
     if (!setupScene())
       return fail("SETUP_FAILED");
+    if (p_.require_permit && !waitForPermit())
+      return fail("NO_PERMIT");
     if (!moveJoints(rh_cell::kReadyJoints))
       return fail("PLAN_FAILED");
     setState("MOVE_TO_PORT");
@@ -122,7 +160,11 @@ public:
     streamer_->deactivate();
     log_file_.close();
     if (!stopped)
+    {
+      if (p_.require_permit && !permit_)
+        waitForPermit();  // after a trip the operator must reset before the arm moves again
       moveJoints(rh_cell::kReadyJoints);
+    }
 
     setState(result == "SEATED" ? "DONE" : result);
     RCLCPP_INFO(log_, "RESULT: %s | peak |F| %.1f N | final axial %.1f N | max depth %.1f mm | %.1f s | log %s",
@@ -148,6 +190,8 @@ private:
                   p_.fault.c_str());
       p_.fault = "none";
     }
+    p_.require_permit = get("require_permit", p_.require_permit);
+    p_.permit_timeout = get("permit_timeout", p_.permit_timeout);
     p_.mass = get("mass", p_.mass);
     p_.damping = get("damping", p_.damping);
     p_.stiffness = get("stiffness", p_.stiffness);
@@ -184,7 +228,7 @@ private:
     const double period = 1.0 / p_.rate;
     double s_des = 0.0;
     s_cmd_ = 0.0;
-    bool seated = false;
+    bool seated = false, holding = false;
     double t_seated = 0.0, t_end_reached = -1.0;
 
     const rclcpp::Time t0 = node_->now();
@@ -210,6 +254,23 @@ private:
       ft_->update(dt);
       const bool alive = ft_->alive();
       const double f_ax = ft_->axial();  // force the environment applies along +insertion (contact < 0)
+
+      // ---- interlock (Phase 2): freeze in place while the PLC withdraws the motion permit
+      if (p_.require_permit && !permit_)
+      {
+        if (!holding)
+        {
+          RCLCPP_WARN(log_, "Motion permit withdrawn by the interlock: HOLD");
+          setState("HOLD_INTERLOCK");
+          holding = true;
+        }
+        streamer_->hold();
+        publishStatus(guard_latched_, alive, depthMeasured(axis));
+        continue;
+      }
+      if (holding)
+        return "FAULT_INTERLOCK";  // permit is back: back out, the operator restarts the cycle
+
       if (!alive)
         return logFault("FAULT_SENSOR", "No F/T data for 50 ms");
 
@@ -239,6 +300,9 @@ private:
       final_axial_ = f_ax;
       t_last_ = t;
       logRow(t, s_des, s_cmd_, depth, alive, tripped, rh_cell_core::toString(phase));
+      if (tripped)
+        guard_latched_ = true;  // the guard latches; keep reporting it so the PLC cannot miss it
+      publishStatus(guard_latched_, alive, depth);
 
       if (tripped)
         return logFault("FAULT_FORCE_LIMIT", "Force above limit for 5 samples");
@@ -284,11 +348,18 @@ private:
       }
       prev = now;
       ft_->update(dt);
+      if (mustFreeze())
+      {
+        streamer_->hold();  // e-stop / door / heartbeat: no motion at all, not even retreat
+        continue;
+      }
       s_cmd_ = std::max(0.0, s_cmd_ - speed * dt);
       Eigen::Isometry3d target = start_;
       target.translation() += s_cmd_ * axis + offset_;
       streamer_->step(target, dt);
-      logRow(t_last_ + (now - t0).seconds(), s_cmd_, s_cmd_, depthMeasured(axis), ft_->alive(), false, "RETRACT");
+      const double depth = depthMeasured(axis);
+      logRow(t_last_ + (now - t0).seconds(), s_cmd_, s_cmd_, depth, ft_->alive(), false, "RETRACT");
+      publishStatus(guard_latched_, ft_->alive(), depth);
     }
     const rclcpp::Time t_end = node_->now();  // settle at the pre-insert pose
     Eigen::Isometry3d hold = start_;
@@ -301,6 +372,41 @@ private:
   }
 
   // ------------------------------------------------------------------ helpers
+  // Interlock causes that forbid ANY motion (first-out codes from rh_cell_ic/interlock.py):
+  // 1 e-stop, 2 door, 5 controller heartbeat, 6 PLC comms.
+  bool mustFreeze() const
+  {
+    const int fo = first_out_;
+    return p_.require_permit && !permit_ && (fo == 1 || fo == 2 || fo == 5 || fo == 6);
+  }
+
+  bool waitForPermit()
+  {
+    setState("WAIT_PERMIT");
+    RCLCPP_INFO(log_, "Waiting for the interlock permit (press RESET on the operator screen) ...");
+    const auto t0 = std::chrono::steady_clock::now();
+    while (rclcpp::ok() && !permit_)
+    {
+      if (std::chrono::steady_clock::now() - t0 > std::chrono::duration<double>(p_.permit_timeout))
+        return false;
+      std::this_thread::sleep_for(100ms);
+    }
+    RCLCPP_INFO(log_, "Permit received");
+    return permit_;
+  }
+
+  void publishStatus(bool tripped, bool alive, double depth)
+  {
+    std_msgs::msg::Bool b;
+    b.data = tripped;
+    guard_pub_->publish(b);
+    b.data = alive;
+    alive_pub_->publish(b);
+    std_msgs::msg::Float64 d;
+    d.data = depth;
+    depth_pub_->publish(d);
+  }
+
   double depthMeasured(const Eigen::Vector3d& axis)
   {
     return (streamer_->measuredPose().translation() - start_.translation()).dot(axis);
@@ -382,10 +488,20 @@ private:
   {
     for (int attempt = 1; attempt <= 5; ++attempt)
     {
+      if (p_.require_permit && !permit_)
+      {
+        RCLCPP_ERROR(log_, "No interlock permit: trajectory refused");
+        return false;
+      }
       mg_.setStartStateToCurrentState();
       MoveGroupInterface::Plan plan;
       if (static_cast<bool>(mg_.plan(plan)))
-        return static_cast<bool>(mg_.execute(plan));
+      {
+        moveit_busy_ = true;
+        const bool ok = static_cast<bool>(mg_.execute(plan));
+        moveit_busy_ = false;
+        return ok;
+      }
       RCLCPP_WARN(log_, "Planning attempt %d/5 failed", attempt);
       std::this_thread::sleep_for(300ms);
     }
@@ -405,6 +521,15 @@ private:
   std::unique_ptr<rh_cell::CartesianStreamer> streamer_;
   std::unique_ptr<rh_cell::FtSensor> ft_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr guard_pub_, alive_pub_, heartbeat_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr depth_pub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr permit_sub_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr first_out_sub_;
+  rclcpp::TimerBase::SharedPtr heartbeat_timer_;
+  std::atomic<bool> permit_{false};
+  std::atomic<bool> moveit_busy_{false};
+  std::atomic<int> first_out_{0};
+  bool guard_latched_ = false;
 
   Params p_;
   Eigen::Isometry3d start_ = Eigen::Isometry3d::Identity();

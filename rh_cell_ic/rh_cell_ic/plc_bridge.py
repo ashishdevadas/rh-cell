@@ -50,7 +50,7 @@ class PlcBridge(Node):
         self.declare_parameter("modbus_port", 502)
         self.declare_parameter("scan_period", 0.02)      # s, same as the OpenPLC task
         self.declare_parameter("operator_timeout", 0.5)  # s
-        self.declare_parameter("ft_timeout", 0.1)        # s
+        self.declare_parameter("ft_timeout", 0.3)        # s, wall clock: backup to the 50 ms watchdog in the task node
         self.declare_parameter("heartbeat_timeout", 0.5)  # s
 
         mode = self.get_parameter("plc_mode").value
