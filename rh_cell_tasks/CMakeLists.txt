@@ -45,7 +45,17 @@ ament_target_dependencies(force_insertion
   rclcpp moveit_core moveit_ros_planning_interface geometry_msgs moveit_msgs shape_msgs std_msgs
   sensor_msgs controller_manager_msgs)
 
-install(TARGETS insertion_sequence ft_monitor force_insertion DESTINATION lib/${PROJECT_NAME})
-install(PROGRAMS scripts/plot_run.py scripts/plot_faults.py DESTINATION lib/${PROJECT_NAME})
+# Teleoperation with a virtual fixture (Phase 1.3)
+add_executable(teleop_fixture src/teleop_fixture.cpp src/cell.cpp src/cartesian_streamer.cpp)
+target_compile_features(teleop_fixture PUBLIC cxx_std_17)
+target_include_directories(teleop_fixture PRIVATE include)
+target_link_libraries(teleop_fixture rh_cell_core::rh_cell_core)
+ament_target_dependencies(teleop_fixture
+  rclcpp moveit_core moveit_ros_planning_interface geometry_msgs moveit_msgs shape_msgs std_msgs
+  sensor_msgs controller_manager_msgs)
+
+install(TARGETS insertion_sequence ft_monitor force_insertion teleop_fixture DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/plot_run.py scripts/plot_faults.py scripts/plot_teleop.py scripts/teleop_demo.py
+        DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

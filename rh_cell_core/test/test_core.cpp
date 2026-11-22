@@ -7,6 +7,7 @@
 #include "rh_cell_core/admittance_1d.hpp"
 #include "rh_cell_core/force_guard.hpp"
 #include "rh_cell_core/insertion_monitor.hpp"
+#include "rh_cell_core/virtual_fixture.hpp"
 #include "rh_cell_core/signal.hpp"
 
 using rh_cell_core::Admittance1D;
@@ -159,4 +160,42 @@ TEST(InsertionMonitor, SustainedEarlyContactIsStillCaught)
   InsertionPhase ph = InsertionPhase::FREE;
   for (int i = 0; i < 10; ++i) ph = m.update(0.03, 4.0);
   EXPECT_EQ(ph, InsertionPhase::EARLY_CONTACT) << "10 samples (40 ms) of real contact at 30 mm = fault.";
+}
+
+// ---------------------------------------------------------------- virtual fixture
+using rh_cell_core::FixtureParams;
+using rh_cell_core::VirtualFixture;
+
+TEST(VirtualFixture, PassThroughOutsideZone)
+{
+  VirtualFixture vf(FixtureParams{});
+  const auto out = vf.apply({-0.5, 0.3, 0.0}, {0.01, 0.02, 0.03});
+  EXPECT_FALSE(out.engaged);
+  EXPECT_DOUBLE_EQ(out.v[1], 0.02);
+}
+
+TEST(VirtualFixture, AttenuatesSidewaysAndPullsBack)
+{
+  FixtureParams p;  // axis = world x through the origin
+  VirtualFixture vf(p);
+  const auto out = vf.apply({-0.10, 0.002, 0.0}, {0.0, 0.05, 0.0});
+  EXPECT_TRUE(out.engaged);
+  // sideways: 0.1 * 0.05 = 0.005 m/s outwards, pull: 2.0 * 0.002 = 0.004 m/s back
+  EXPECT_NEAR(out.v[1], 0.005 - 0.004, 1e-9);
+}
+
+TEST(VirtualFixture, BlocksForwardWhenMisalignedAtPort)
+{
+  VirtualFixture vf(FixtureParams{});
+  const auto out = vf.apply({-0.01, 0.010, 0.0}, {0.02, 0.0, 0.0});
+  EXPECT_TRUE(out.forward_blocked);
+  EXPECT_LE(out.v[0], 0.0);
+}
+
+TEST(VirtualFixture, AllowsForwardWhenAligned)
+{
+  VirtualFixture vf(FixtureParams{});
+  const auto out = vf.apply({-0.01, 0.001, 0.0}, {0.02, 0.0, 0.0});
+  EXPECT_FALSE(out.forward_blocked);
+  EXPECT_NEAR(out.v[0], 0.02, 1e-9);
 }

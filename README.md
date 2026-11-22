@@ -14,7 +14,7 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 |---|---|---|
 | 1.1 | Cell layout + scripted remove / insert / extract sequence | ✅ |
 | 1.2 | Force/torque sensing + admittance-controlled insertion with a force limit | ✅ |
-| 1.3 | Gamepad teleoperation with virtual fixtures | ⏳ |
+| 1.3 | Teleoperation with a guidance virtual fixture, push limit and dead-man | ✅ |
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ⏳ |
 | 3 | Fault injection, FMEA, demo video | 🟡 fault injection done |
 
@@ -62,6 +62,32 @@ ros2 topic echo /rh/ft --once      # 4.90 N on tool y; about 375 Hz on a laptop 
 ros2 launch rh_cell_bringup sim.launch.py
 ros2 run rh_cell_tasks force_insertion
 ros2 run rh_cell_tasks plot_run.py
+```
+
+## Phase 1.3: teleoperation with a virtual fixture
+
+![Teleoperation, fixture ON vs OFF](docs/teleop_fixture.gif)
+
+The operator drives the tool in world x/y/z (orientation locked) with `teleop_twist_keyboard` or the scripted operator `teleop_demo.py`. Near the port, the virtual fixture (`rh_cell_core/virtual_fixture.hpp`, no ROS, unit-tested):
+
+- passes only 10% of sideways commands and pulls the tool back onto the port axis,
+- blocks forward motion while the tool is more than 4 mm off the axis, so the cassette cannot be driven into the wall,
+- plus a push limit (forward motion cut above 8 N) and a dead-man (no command for 0.3 s means stop).
+
+**Same scripted commands in both runs** (start 20 mm off-axis, drift sideways while going in, keep pushing at the seat). This shows the fixture correcting a sloppy operator; it is not a study with human operators.
+
+![Teleoperation plot](docs/teleop_fixture.png)
+
+| | Fixture ON | Fixture OFF |
+|---|---|---|
+| Through the port | Yes, to the seat | No, jammed at the wall |
+| Push on the environment | 11 N briefly, then held at the 8 N limit | 703 N against the wall |
+
+```bash
+ros2 launch rh_cell_bringup sim.launch.py
+ros2 run rh_cell_tasks teleop_fixture                     # add  --ros-args -p use_fixture:=false  to compare
+ros2 run rh_cell_tasks teleop_demo.py                     # after "Teleop active"; or teleop_twist_keyboard:
+ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r cmd_vel:=/rh/teleop_cmd
 ```
 
 ## Phase 3 (part 1): fault injection
