@@ -16,7 +16,7 @@ A simulated remote-handling cell inspired by ITER divertor maintenance. A UR5e r
 | 1.2 | Force/torque sensing + admittance-controlled insertion with a force limit | ✅ |
 | 1.3 | Teleoperation with a guidance virtual fixture, push limit and dead-man | ✅ |
 | 2 | EPICS signals (caproto) + OpenPLC interlock (IEC 61131-3) + Phoebus operator screen | ✅ |
-| 3 | Fault injection, FMEA, demo video | 🟡 fault injection done |
+| 3 | Fault injection + FMEA ([docs/FMEA.md](docs/FMEA.md)) | ✅ |
 
 ## Phase 1.2 progress: force/torque sensor check
 
@@ -142,6 +142,10 @@ ros2 run rh_cell_tasks force_insertion --ros-args -p fault:=misaligned   # or st
 *Top view of `fault:=misaligned`: the cassette stops at the wall face (grey line) instead of passing through to the seat (green), the force guard trips, and the arm backs out. The opening is hidden from above by the wall piece over the port.*
 
 **The misaligned case is the important one.** Detection is consistent (always 30.0 mm, 5 samples), but the impact peak is not: 438 N in the plotted run, 263, 447 and 465 N in other runs of the same code, and slowing the approach from 5 to 1 mm/s barely changes it. Against a rigid obstacle, the first impact is set by contact and joint stiffness, not by the control loop: software limits how long the overload lasts, not how high it goes. That is why the seat in this cell is spring-loaded, and why real remote-handling systems rely on passive compliance and on checking alignment *before* contact (vision, in ITER's case) rather than on force control alone.
+
+## Phase 3 (part 2): FMEA
+
+[docs/FMEA.md](docs/FMEA.md): 14 failure modes of the cell (insertion physics, sensor, interlock, teleoperation, planning), each with detection, mitigation, severity / occurrence / detection ratings and the run or test that exercises it. The highest-risk line is a **frozen or biased F/T sensor** (RPN 147): the watchdog only detects data that stops arriving, not data that is wrong. The most instructive line is the misaligned port: detection is reliable, but the impact peak can only be bounded outside the force loop (compliance, alignment check before contact).
 
 ## Cell layout (metres, robot base frame)
 
