@@ -5,6 +5,8 @@
 #include <cmath>
 
 #include "rh_cell_core/admittance_1d.hpp"
+#include "rh_cell_core/cartesian_admittance.hpp"
+#include "rh_cell_core/peg_contact_2d.hpp"
 #include "rh_cell_core/force_guard.hpp"
 #include "rh_cell_core/insertion_monitor.hpp"
 #include "rh_cell_core/virtual_fixture.hpp"
@@ -198,4 +200,184 @@ TEST(VirtualFixture, AllowsForwardWhenAligned)
   const auto out = vf.apply({-0.01, 0.001, 0.0}, {0.02, 0.0, 0.0});
   EXPECT_FALSE(out.forward_blocked);
   EXPECT_NEAR(out.v[0], 0.02, 1e-9);
+}
+
+TEST(InsertionMonitor, LeadInContactIsNotEarlyButLaterContactIs)
+{
+  auto p = noDebounce();
+  p.lead_in_end = 0.055;  // chamfer contact expected up to 55 mm
+  InsertionMonitor m(p);
+  EXPECT_EQ(m.update(0.032, 5.0), rh_cell_core::InsertionPhase::FREE) << "sliding on the chamfer";
+  EXPECT_EQ(m.update(0.080, 5.0), rh_cell_core::InsertionPhase::EARLY_CONTACT) << "blocked past the lead-in";
+}
+
+// ======================================================================= RH Cell 2.0, step 2
+// Cartesian admittance + planar chamfer contact model (no Gazebo).
+using rh_cell_core::CartesianAdmittance;
+using rh_cell_core::CartesianAdmittanceParams;
+using rh_cell_core::PegPortGeometry;
+
+TEST(CartesianAdmittance, FollowsTargetInFreeSpace)
+{
+  CartesianAdmittance ctrl(CartesianAdmittanceParams{});
+  const Eigen::Vector3d target(0.05, 0.004, -0.003);
+  for (int i = 0; i < 2000; ++i) ctrl.step(target, Eigen::Vector3d::Zero(), 0.002);
+  EXPECT_LT((ctrl.position() - target).norm(), 1e-3);
+}
+
+TEST(CartesianAdmittance, YieldsPerAxisWithItsOwnStiffness)
+{
+  CartesianAdmittance ctrl(CartesianAdmittanceParams{});  // K = 500 axial, 200 lateral
+  for (int i = 0; i < 3000; ++i) ctrl.step(Eigen::Vector3d::Zero(), Eigen::Vector3d(-5.0, 1.0, 0.0), 0.002);
+  EXPECT_NEAR(ctrl.position().x(), -0.010, 5e-4) << "-5 N on 500 N/m = 10 mm back";
+  EXPECT_NEAR(ctrl.position().y(), 0.005, 5e-4) << "1 N on 200 N/m = 5 mm sideways";
+  EXPECT_NEAR(ctrl.position().z(), 0.0, 1e-6);
+}
+
+TEST(CartesianAdmittance, DeflectionIsClamped)
+{
+  CartesianAdmittance ctrl(CartesianAdmittanceParams{});  // lateral limit 10 mm
+  for (int i = 0; i < 3000; ++i) ctrl.step(Eigen::Vector3d::Zero(), Eigen::Vector3d(0.0, 100.0, 0.0), 0.002);
+  EXPECT_NEAR(ctrl.position().y(), 0.010, 1e-9) << "100 N would ask for 0.5 m: must stop at the 10 mm limit";
+}
+
+namespace
+{
+struct ChamferRun
+{
+  bool inserted = false;
+  double peak = 0.0;
+  double max_lateral_move = 0.0;
+};
+
+// Believed port at y = offset (true port at y = 0). Reference: straight in at 5 mm/s along the
+// believed axis. lateral_stiff = robot holds y exactly (B1/B2 behaviour).
+ChamferRun simulateChamfer(double offset, double k_lat, double mu, bool lateral_stiff)
+{
+  PegPortGeometry g;
+  g.mu = mu;
+  CartesianAdmittanceParams p;
+  p.stiffness = {500.0, k_lat, k_lat};
+  CartesianAdmittance adm(p, Eigen::Vector3d(-0.005, offset, 0.0));
+  rh_cell_core::PegPortContact contact(g);
+  Eigen::Vector3d f = Eigen::Vector3d::Zero();
+  ChamferRun r;
+  const double dt = 0.002;
+  for (int i = 0; i < 10000; ++i)
+  {
+    const double t = i * dt;
+    const Eigen::Vector3d x_des(std::min(-0.005 + 0.005 * t, 0.035), offset, 0.0);
+    Eigen::Vector3d x = adm.step(x_des, f, dt);
+    if (lateral_stiff)
+      x.y() = offset;
+    const Eigen::Vector2d F = contact.force({x.x(), x.y()});
+    f = Eigen::Vector3d(F.x(), F.y(), 0.0);
+    r.peak = std::max(r.peak, F.norm());
+    r.max_lateral_move = std::max(r.max_lateral_move, std::abs(x.y() - offset));
+    if (x.x() > g.thickness)
+    {
+      r.inserted = true;
+      break;
+    }
+  }
+  return r;
+}
+}  // namespace
+
+TEST(Chamfer, CentredCassetteGoesStraightIn)
+{
+  const auto r = simulateChamfer(0.0, 200.0, 0.3, true);
+  EXPECT_TRUE(r.inserted);
+  EXPECT_LT(r.peak, 0.1);
+}
+
+TEST(Chamfer, LaterallyStiffRobotJamsOnTheChamfer)
+{
+  const auto r = simulateChamfer(0.004, 200.0, 0.3, true);
+  EXPECT_FALSE(r.inserted) << "B1/B2: cannot move sideways, so the chamfer cannot guide it";
+  EXPECT_GT(r.peak, 10.0);
+}
+
+TEST(Chamfer, LaterallyCompliantRobotSlidesIn)
+{
+  const auto r = simulateChamfer(0.004, 200.0, 0.3, false);
+  EXPECT_TRUE(r.inserted) << "4 mm offset, mu 0.3: the chamfer pushes the cassette into the port";
+  EXPECT_GT(r.max_lateral_move, 0.0019) << "it must have moved sideways by at least offset - clearance";
+  EXPECT_LT(r.peak, 10.0);
+}
+
+TEST(Chamfer, CompliantRobotStillWedgesWhenFrictionExceedsChamferSlope)
+{
+  const auto r = simulateChamfer(0.004, 200.0, 1.2, false);
+  EXPECT_FALSE(r.inserted) << "mu 1.2 > tan(45 deg): friction locks the cassette on the chamfer";
+}
+
+TEST(Chamfer, OffsetBeyondTheChamferHitsTheWallFace)
+{
+  const auto r = simulateChamfer(0.009, 200.0, 0.3, false);
+  EXPECT_FALSE(r.inserted) << "9 mm > clearance + chamfer: compliance alone cannot help, needs search";
+}
+
+// Step 2b: the Gazebo failure reproduced. Rigid contact (5e6 N/m) seen through the F/T low-pass
+// filter with one sample of delay, 250 Hz. The filter lag destabilises the lateral admittance
+// (it runs into its 10 mm limit and the guard trips); a faster filter plus more damping is stable.
+namespace
+{
+struct LagRun
+{
+  bool inserted = false;
+  bool tripped = false;  // force guard: 5 filtered samples > 20 N
+  double max_lat = 0.0;
+};
+
+LagRun simulateLaggedContact(double offset, double damping_lat, double cutoff_hz)
+{
+  constexpr double kPi = 3.14159265358979323846;
+  PegPortGeometry g;
+  g.k_env = 5.0e6;
+  g.k_t = 5.0e6;
+  CartesianAdmittanceParams p;
+  p.damping = {60.0, damping_lat, damping_lat};
+  CartesianAdmittance adm(p, Eigen::Vector3d(-0.003, 0.0, 0.0));
+  rh_cell_core::PegPortContact contact(g);
+  const double dt = 0.004, a = 1.0 - std::exp(-2.0 * kPi * cutoff_hz * dt);
+  Eigen::Vector2d filt(0.0, 0.0), delayed(0.0, 0.0);
+  int over = 0;
+  LagRun r;
+  for (int i = 0; i < 5000; ++i)
+  {
+    const Eigen::Vector3d x_des(std::min(-0.003 + 0.005 * i * dt, 0.035), 0.0, 0.0);
+    const Eigen::Vector3d x = adm.step(x_des, Eigen::Vector3d(delayed.x(), delayed.y(), 0.0), dt);
+    const Eigen::Vector2d F = contact.force({x.x(), x.y() + offset});  // true port at -offset
+    delayed = filt;
+    filt += a * (F - filt);
+    over = (filt.norm() > 20.0) ? over + 1 : 0;
+    if (over >= 5)
+      r.tripped = true;
+    r.max_lat = std::max(r.max_lat, std::abs(x.y()));
+    if (x.x() > g.thickness)
+    {
+      r.inserted = true;
+      break;
+    }
+  }
+  return r;
+}
+}  // namespace
+
+TEST(StiffContact, SlowForceFilterWithLowDampingGoesUnstable)
+{
+  const auto r = simulateLaggedContact(0.004, 60.0, 20.0);  // the first Gazebo attempt
+  EXPECT_TRUE(r.tripped || r.max_lat > 0.0099) << "expected the 10 mm limit or a guard trip, as in Gazebo";
+}
+
+TEST(StiffContact, FasterFilterWithHigherDampingStaysStable)
+{
+  for (const double off : {0.003, 0.004, 0.005, 0.006})
+  {
+    const auto r = simulateLaggedContact(off, 500.0, 50.0);
+    EXPECT_TRUE(r.inserted) << "offset " << off;
+    EXPECT_FALSE(r.tripped) << "offset " << off;
+    EXPECT_LT(r.max_lat, 0.008) << "offset " << off;
+  }
 }

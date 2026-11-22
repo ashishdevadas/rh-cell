@@ -33,6 +33,8 @@ struct InsertionMonitorParams
   double seat_force = 5.0;         // target seating force [N]
   double seat_band = 1.0;          // |force - seat_force| < band counts as seated [N]
   int seat_samples = 50;           // consecutive samples inside the band to declare SEATED
+  double lead_in_end = 0.0;        // RH Cell 2.0: contact at depth < lead_in_end is EXPECTED (the
+                                   // cassette sliding down the port chamfer), not early. 0 = off.
 };
 
 class InsertionMonitor

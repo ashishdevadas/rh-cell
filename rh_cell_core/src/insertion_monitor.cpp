@@ -24,6 +24,16 @@ InsertionPhase InsertionMonitor::update(double depth, double f)
   if (phase_ == InsertionPhase::SEATED || phase_ == InsertionPhase::EARLY_CONTACT)
     return phase_;
 
+  // Lead-in zone (compliant controllers): touching the chamfer is part of the plan. The force guard
+  // still bounds the force there; the monitor starts judging once the cassette is past it.
+  if (depth < p_.lead_in_end)
+  {
+    in_band_ = 0;
+    touching_ = 0;
+    phase_ = InsertionPhase::FREE;
+    return phase_;
+  }
+
   const bool touching = f > p_.contact_threshold;
   if (!touching)
   {

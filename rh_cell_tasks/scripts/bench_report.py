@@ -42,16 +42,21 @@ def main():
 
     df = pd.concat([pd.read_csv(f) for f in a.csv], ignore_index=True)
     df["ok"] = df.result == "SEATED"
+    if "label" not in df:
+        df["label"] = ""
+    df["label"] = df["label"].fillna("").astype(str)
+    df["series"] = df.controller + df.label.map(lambda s: f" [{s}]" if s else "")
     rows = []
-    for (ctrl, off), g in df.groupby(["controller", "offset_mm"]):
+    for (series, off), g in df.groupby(["series", "offset_mm"]):
+        ctrl = g.controller.iloc[0]
         p, lo, hi = wilson(int(g.ok.sum()), len(g))
-        rows.append(dict(controller=ctrl, offset_mm=off, n=len(g), seated=int(g.ok.sum()), rate=p, lo=lo, hi=hi,
+        rows.append(dict(series=series, controller=ctrl, offset_mm=off, n=len(g), seated=int(g.ok.sum()), rate=p, lo=lo, hi=hi,
                          peak_med=g.peak_N.median(), peak_max=g.peak_N.max(),
                          time_med=g[g.ok].time_s.median() if g.ok.any() else float("nan"),
                          failures=", ".join(f"{r}x{c}" for r, c in g[~g.ok].result.value_counts().items())))
-    t = pd.DataFrame(rows).sort_values(["controller", "offset_mm"])
+    t = pd.DataFrame(rows).sort_values(["series", "offset_mm"])
     pd.set_option("display.width", 160)
-    print(t.to_string(index=False, float_format=lambda v: f"{v:.2f}"))
+    print(t.drop(columns="controller").to_string(index=False, float_format=lambda v: f"{v:.2f}"))
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
     c, ch = a.clearance, a.clearance + a.chamfer
@@ -63,15 +68,20 @@ def main():
         ax.grid(alpha=0.3)
     for x, txt in ((c / 2 - 0.25, "free"), ((c + ch) / 2, "chamfer"), ((ch + xmax) / 2, "wall face")):
         ax1.text(x, 1.07, txt, ha="center", fontsize=9, color="#555")
-    ctrls = list(t.controller.unique())
-    for i, (ctrl, g) in enumerate(t.groupby("controller")):
+    series = list(t.series.unique())
+    labels = sorted(df.label.unique())
+    for i, (ser, g) in enumerate(t.groupby("series")):
+        ctrl = g.controller.iloc[0]
+        lab = df[df.series == ser].label.iloc[0]
         col = COLORS.get(ctrl, "k")
-        dx = 0.08 * (i - (len(ctrls) - 1) / 2)  # small sideways shift so overlapping curves stay visible
-        ax1.errorbar(g.offset_mm + dx, g.rate, yerr=[g.rate - g.lo, g.hi - g.rate], color=col, marker="o", capsize=3,
-                     label=f"{LABELS.get(ctrl, ctrl)} (n = {int(g.n.min())}-{int(g.n.max())} per offset)")
-        raw = df[df.controller == ctrl]
+        ls = ["-", "--", ":", "-."][labels.index(lab) % 4]  # line style = label (e.g. friction)
+        name = LABELS.get(ctrl, ctrl) + (f" [{lab}]" if lab else "")
+        dx = 0.08 * (i - (len(series) - 1) / 2)  # small sideways shift so overlapping curves stay visible
+        ax1.errorbar(g.offset_mm + dx, g.rate, yerr=[g.rate - g.lo, g.hi - g.rate], color=col, ls=ls, marker="o",
+                     capsize=3, label=f"{name} (n = {int(g.n.min())}-{int(g.n.max())} per offset)")
+        raw = df[df.series == ser]
         ax2.scatter(raw.offset_mm + dx, raw.peak_N, color=col, s=14, alpha=0.5)
-        ax2.plot(g.offset_mm + dx, g.peak_med, color=col, marker="o", label=f"{LABELS.get(ctrl, ctrl)} (median)")
+        ax2.plot(g.offset_mm + dx, g.peak_med, color=col, ls=ls, marker="o", label=f"{name} (median)")
     ax1.set(ylabel="success rate (seated)", ylim=(-0.05, 1.15), xlim=(-0.5, xmax))
     ax1.legend(loc="center right", fontsize=8)
     ax2.set(xlabel="lateral misalignment of the believed port [mm] (random direction)", ylabel="peak |F| [N]")

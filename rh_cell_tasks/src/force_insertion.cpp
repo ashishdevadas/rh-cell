@@ -14,13 +14,17 @@
 //
 // Controller (RH Cell 2.0): -p controller:=axial (default, admittance along the port axis)
 //                           -p controller:=position (no admittance, same as fault:=stiff)
+//                           -p controller:=cartesian (3-D admittance: also compliant SIDEWAYS, so the
+//                              port chamfer can guide the cassette in; lat_stiffness, lat_damping,
+//                              lat_max set the lateral gains and deflection limit)
 //
 // Benchmark (RH Cell 2.0, step 1b): -p offsets_mm:="0,2,4,6" -p repeats:=3 -p seed:=1
 //   Runs one insertion per (offset, repeat) from the pre-insert pose. Before each trial the robot
 //   moves sideways to where it BELIEVES the port is: the true port centre plus a radial offset in a
 //   random direction (same seed = same offsets and directions, so controllers are compared on
 //   identical trials). Trial order is shuffled. One summary CSV per benchmark:
-//   ~/.ros/rh_cell_logs/bench_<controller>_<stamp>.csv, plus one full log per trial.
+//   ~/.ros/rh_cell_logs/bench_<controller>[_<label>]_<stamp>.csv, plus one full log per trial.
+//   -p label:=mu03 tags a benchmark (e.g. the world used) in the file name and the CSV.
 //   Use with world:=rh_cell_tight.sdf (2 mm clearance, 5 mm chamfer).
 //
 // Interlock (Phase 2): -p require_permit:=true  (start the sim with ic:=true)
@@ -74,6 +78,7 @@
 #include <std_msgs/msg/string.hpp>
 
 #include "rh_cell_core/admittance_1d.hpp"
+#include "rh_cell_core/cartesian_admittance.hpp"
 #include "rh_cell_core/force_guard.hpp"
 #include "rh_cell_core/insertion_monitor.hpp"
 #include "rh_cell_tasks/cartesian_streamer.hpp"
@@ -88,7 +93,10 @@ namespace
 struct Params
 {
   std::string fault = "none";
-  std::string controller = "axial";  // axial | position
+  std::string controller = "axial";  // axial | position | cartesian
+  double lat_stiffness = 200.0, lat_damping = 500.0, lat_max = 0.01;  // cartesian: lateral gains, limit [m]
+  double ft_cutoff = 20.0;  // F/T low-pass [Hz]. Step 2b: 50 Hz for contact-rich runs (20 Hz lag destabilises)
+  std::string label;                 // benchmark tag (world, friction, ...)
   std::string offsets_mm;            // benchmark: comma-separated radial offsets [mm]
   int64_t repeats = 1;
   int64_t seed = 1;
@@ -123,7 +131,7 @@ public:
     mg_.setMaxVelocityScalingFactor(0.3);
     mg_.setMaxAccelerationScalingFactor(0.3);
     streamer_ = std::make_unique<rh_cell::CartesianStreamer>(node_, mg_.getRobotModel());
-    ft_ = std::make_unique<rh_cell::FtSensor>(node_, "/rh/ft");
+    ft_ = std::make_unique<rh_cell::FtSensor>(node_, "/rh/ft", p_.ft_cutoff);
     state_pub_ = node_->create_publisher<std_msgs::msg::String>("/rh/state", rclcpp::QoS(1).transient_local());
 
     // ---- Phase 2: status for the PLC bridge / EPICS IOC, permit from the PLC
@@ -213,11 +221,17 @@ private:
       p_.fault = "none";
     }
     p_.controller = get("controller", p_.controller);
-    if (p_.controller != "axial" && p_.controller != "position")
+    if (p_.controller != "axial" && p_.controller != "position" && p_.controller != "cartesian")
     {
-      RCLCPP_WARN(log_, "Unknown controller '%s' (use axial, position): using axial.", p_.controller.c_str());
+      RCLCPP_WARN(log_, "Unknown controller '%s' (use axial, position, cartesian): using axial.",
+                  p_.controller.c_str());
       p_.controller = "axial";
     }
+    p_.lat_stiffness = num("lat_stiffness", p_.lat_stiffness);
+    p_.lat_damping = num("lat_damping", p_.lat_damping);
+    p_.lat_max = num("lat_max", p_.lat_max);
+    p_.ft_cutoff = num("ft_cutoff", p_.ft_cutoff);
+    p_.label = get("label", std::string(""));
     p_.offsets_mm = listParam("offsets_mm");
     p_.repeats = get("repeats", p_.repeats);
     p_.seed = get("seed", p_.seed);
@@ -247,6 +261,10 @@ private:
     RCLCPP_INFO(log_, "fault=%s | controller=%s | Admittance M=%.1f D=%.0f K=%.0f | force limit %.0f N | seat overshoot %.0f mm",
                 p_.fault.c_str(), p_.controller.c_str(), p_.mass, p_.damping, p_.stiffness, p_.force_limit,
                 p_.seat_overshoot * 1000.0);
+    RCLCPP_INFO(log_, "F/T low-pass %.0f Hz", p_.ft_cutoff);
+    if (p_.controller == "cartesian")
+      RCLCPP_INFO(log_, "Cartesian admittance: lateral K=%.0f N/m D=%.0f N*s/m, deflection limit %.0f mm",
+                  p_.lat_stiffness, p_.lat_damping, p_.lat_max * 1000.0);
   }
 
   // ------------------------------------------------------------------ main control loop
@@ -258,7 +276,19 @@ private:
     mp.expected_depth = rh_cell::kInsertDepth;
     mp.contact_threshold = p_.contact_threshold;
     mp.seat_force = p_.stiffness * p_.seat_overshoot;
+    const bool cartesian = (p_.controller == "cartesian");
+    if (cartesian)
+      mp.lead_in_end = p_.mouth_end + 0.005;  // chamfer contact is part of the plan up to here
     rh_cell_core::InsertionMonitor monitor(mp);
+
+    // RH Cell 2.0: 3-D admittance in the port frame (= world axes): x axial, y / z lateral.
+    rh_cell_core::CartesianAdmittanceParams cp;
+    cp.mass = Eigen::Vector3d::Constant(p_.mass);
+    cp.damping = {p_.damping, p_.lat_damping, p_.lat_damping};
+    cp.stiffness = {p_.stiffness, p_.lat_stiffness, p_.lat_stiffness};
+    cp.max_deflection = {0.05, p_.lat_max, p_.lat_max};
+    rh_cell_core::CartesianAdmittance cadm(cp);
+    lat_.setZero();
 
     const Eigen::Vector3d axis = Eigen::Vector3d::UnitX();
     const double s_end = rh_cell::kInsertDepth + p_.seat_overshoot;
@@ -324,9 +354,20 @@ private:
 
       // ---- admittance: the commanded depth gives way when the seat pushes back
       //      (fault:=stiff switches it off: pure position control)
-      s_cmd_ = (p_.fault == "stiff" || p_.controller == "position") ? s_des : adm.step(s_des, f_ax, dt);
+      if (cartesian)
+      {
+        // F/T wrench is in the tool frame (z = insertion); rotate the force into the port frame
+        const auto& w = ft_->wrench();
+        const Eigen::Vector3d f_port = start_.linear() * Eigen::Vector3d(w[0], w[1], w[2]);
+        const Eigen::Vector3d x = cadm.step(Eigen::Vector3d(s_des, 0.0, 0.0), f_port, dt);
+        s_cmd_ = x.x();
+        lat_ = Eigen::Vector3d(0.0, x.y(), x.z());
+        max_lat_ = std::max(max_lat_, lat_.norm());
+      }
+      else
+        s_cmd_ = (p_.fault == "stiff" || p_.controller == "position") ? s_des : adm.step(s_des, f_ax, dt);
       Eigen::Isometry3d target = start_;
-      target.translation() += s_cmd_ * axis + offset_;
+      target.translation() += s_cmd_ * axis + offset_ + lat_;
       streamer_->step(target, dt);
 
       const double depth = depthMeasured(axis);
@@ -364,6 +405,17 @@ private:
         return logFault("FAULT_NOT_SEATED", "Reference reached the end but the cassette never seated");
     }
     return "ABORTED";
+  }
+
+  // A number given on the command line as 50 arrives as an integer, as 50.0 as a double: accept both.
+  double num(const std::string& n, double def)
+  {
+    if (!node_->has_parameter(n))
+      node_->declare_parameter<double>(n, def);
+    const rclcpp::Parameter v = node_->get_parameter(n);
+    if (v.get_type() == rclcpp::ParameterType::PARAMETER_INTEGER)
+      return static_cast<double>(v.as_int());
+    return v.as_double();
   }
 
   // ------------------------------------------------------------------ benchmark (RH Cell 2.0, step 1b)
@@ -424,10 +476,11 @@ private:
     }
 
     std::filesystem::create_directories(p_.log_dir);
-    const std::string summary_path = p_.log_dir + "/bench_" + p_.controller + "_" + stampNow() + ".csv";
+    const std::string summary_path = p_.log_dir + "/bench_" + p_.controller +
+                                     (p_.label.empty() ? "" : "_" + p_.label) + "_" + stampNow() + ".csv";
     std::ofstream summary(summary_path);
-    summary << "trial,controller,seed,offset_mm,dir_deg,dy_mm,dz_mm,result,peak_N,final_axial_N,max_depth_mm,"
-               "time_s,log\n";
+    summary << "trial,controller,label,seed,offset_mm,dir_deg,dy_mm,dz_mm,result,peak_N,final_axial_N,max_depth_mm,"
+               "time_s,lateral_move_mm,log\n";
     RCLCPP_INFO(log_, "BENCHMARK: %zu trials | controller %s | seed %ld | offsets [%s] mm x %ld", trials.size(),
                 p_.controller.c_str(), static_cast<long>(p_.seed), p_.offsets_mm.c_str(),
                 static_cast<long>(p_.repeats));
@@ -445,13 +498,14 @@ private:
       if (res == "SEATED")
         ++seated;
       char line[640];
-      std::snprintf(line, sizeof(line), "%zu,%s,%ld,%.2f,%.1f,%.3f,%.3f,%s,%.2f,%.2f,%.2f,%.2f,%s\n", k + 1,
-                    p_.controller.c_str(), static_cast<long>(p_.seed), mm, dir * 180.0 / kPi, off.y() * 1e3,
-                    off.z() * 1e3, res.c_str(), peak_, final_axial_, max_depth_ * 1e3, cycle_time_, log_path_.c_str());
+      std::snprintf(line, sizeof(line), "%zu,%s,%s,%ld,%.2f,%.1f,%.3f,%.3f,%s,%.2f,%.2f,%.2f,%.2f,%.2f,%s\n", k + 1,
+                    p_.controller.c_str(), p_.label.c_str(), static_cast<long>(p_.seed), mm, dir * 180.0 / kPi,
+                    off.y() * 1e3, off.z() * 1e3, res.c_str(), peak_, final_axial_, max_depth_ * 1e3, cycle_time_,
+                    max_lat_ * 1e3, log_path_.c_str());
       summary << line;
       summary.flush();
-      RCLCPP_INFO(log_, "TRIAL %zu/%zu: offset %.1f mm at %.0f deg -> %s | peak %.1f N | depth %.1f mm", k + 1,
-                  trials.size(), mm, dir * 180.0 / kPi, res.c_str(), peak_, max_depth_ * 1e3);
+      RCLCPP_INFO(log_, "TRIAL %zu/%zu: offset %.1f mm at %.0f deg -> %s | peak %.1f N | depth %.1f mm | moved sideways %.1f mm",
+                  k + 1, trials.size(), mm, dir * 180.0 / kPi, res.c_str(), peak_, max_depth_ * 1e3, max_lat_ * 1e3);
       if (res == "TARE_FAILED" || res == "ABORTED")
         break;
     }
@@ -467,7 +521,7 @@ private:
   // return to the nominal pre-insert pose. Streaming stays active between trials.
   std::string runTrial(int k, const Eigen::Vector3d& off)
   {
-    peak_ = final_axial_ = max_depth_ = cycle_time_ = 0.0;
+    peak_ = final_axial_ = max_depth_ = cycle_time_ = max_lat_ = 0.0;
     guard_latched_ = false;
     s_cmd_ = 0.0;
     setState("TRIAL_MOVE");
@@ -487,6 +541,8 @@ private:
   // Smooth sideways move of the believed port position (offset_) at the current depth, then settle.
   void moveOffset(const Eigen::Vector3d& to, double duration)
   {
+    offset_ += lat_;  // same pose, so nothing jumps
+    lat_.setZero();
     const Eigen::Vector3d from = offset_;
     const double period = 1.0 / p_.rate;
     const rclcpp::Time t0 = node_->now();
@@ -545,7 +601,7 @@ private:
       }
       s_cmd_ = std::max(0.0, s_cmd_ - speed * dt);
       Eigen::Isometry3d target = start_;
-      target.translation() += s_cmd_ * axis + offset_;
+      target.translation() += s_cmd_ * axis + offset_ + lat_;  // keep the sideways correction on the way out
       streamer_->step(target, dt);
       const double depth = depthMeasured(axis);
       logRow(t_last_ + (now - t0).seconds(), s_cmd_, s_cmd_, depth, ft_->alive(), false, "RETRACT");
@@ -553,7 +609,7 @@ private:
     }
     const rclcpp::Time t_end = node_->now();  // settle at the pre-insert pose
     Eigen::Isometry3d hold = start_;
-    hold.translation() += offset_;
+    hold.translation() += offset_ + lat_;
     while (rclcpp::ok() && (node_->now() - t_end).seconds() < 0.5)
     {
       streamer_->step(hold, period);
@@ -639,7 +695,7 @@ private:
     std::filesystem::create_directories(p_.log_dir);
     log_path_ = p_.log_dir + "/run_" + (tag.empty() ? p_.fault : tag) + "_" + stampNow() + ".csv";
     log_file_.open(log_path_);
-    log_file_ << "t,s_des,s_cmd,depth,fx,fy,fz,f_axial,f_mag,ft_alive,guard,phase\n";
+    log_file_ << "t,s_des,s_cmd,depth,fx,fy,fz,f_axial,f_mag,ft_alive,guard,phase,dy_cmd,dz_cmd\n";
   }
 
   void logRow(double t, double s_des, double s_cmd, double depth, bool alive, bool guard, const char* phase)
@@ -647,9 +703,10 @@ private:
     if (!log_file_.is_open())
       return;
     const auto& w = ft_->wrench();
-    char line[256];
-    std::snprintf(line, sizeof(line), "%.4f,%.6f,%.6f,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%s\n", t, s_des, s_cmd,
-                  depth, w[0], w[1], w[2], ft_->axial(), ft_->magnitude(), alive ? 1 : 0, guard ? 1 : 0, phase);
+    char line[320];
+    std::snprintf(line, sizeof(line), "%.4f,%.6f,%.6f,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%s,%.6f,%.6f\n", t, s_des,
+                  s_cmd, depth, w[0], w[1], w[2], ft_->axial(), ft_->magnitude(), alive ? 1 : 0, guard ? 1 : 0, phase,
+                  lat_.y(), lat_.z());
     log_file_ << line;
   }
 
@@ -728,7 +785,9 @@ private:
 
   Params p_;
   Eigen::Isometry3d start_ = Eigen::Isometry3d::Identity();
-  Eigen::Vector3d offset_ = Eigen::Vector3d::Zero();  // belief error (fault:=misaligned)
+  Eigen::Vector3d offset_ = Eigen::Vector3d::Zero();  // belief error (fault:=misaligned, benchmark)
+  Eigen::Vector3d lat_ = Eigen::Vector3d::Zero();     // sideways correction from the Cartesian admittance
+  double max_lat_ = 0.0;
   std::string state_;
   double s_cmd_ = 0.0;
   double peak_ = 0.0, final_axial_ = 0.0, max_depth_ = 0.0, cycle_time_ = 0.0, t_last_ = 0.0;
